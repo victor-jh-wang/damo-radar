@@ -26,6 +26,10 @@ os.chdir(os.path.join(ROOT, 'RADAR_inference'))  # evaluate() 内部使用相对
 import pandas as pd
 from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
+import numpy as np
+import nibabel as nib
+from PIL import Image
+import base64
 
 # ---- Mock 模式（本地调试用）----
 # 启动方式: RADAR_WEB_MOCK=1 uvicorn radar_web.server:app --port 8000
@@ -167,6 +171,41 @@ async def api_infer(task_id: str, files: list[UploadFile] = File(...)):
 
     threading.Thread(target=run_inference, args=(task_id, img_dir, save_dir), daemon=True).start()
     return {'ok': True, 'msg': f'已接收 {len(files)} 个文件，推理已启动'}
+
+
+# ---------------- 影像预览 ----------------
+def _render_slice(arr2d, target_w=256):
+    """HU 窗 [-300,400] → 0-255 灰度图，降采样后返回 base64 PNG。"""
+    arr = np.clip(arr2d, -300, 400).astype(np.float32)
+    arr = (arr + 300) / 700 * 255
+    if arr.shape[1] > target_w:
+        step = max(1, arr.shape[1] // target_w)
+        arr = arr[::step, ::step]
+    img = Image.fromarray(arr.astype(np.uint8))
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+@app.get('/api/preview/{task_id}/{filename}')
+def api_preview(task_id: str, filename: str):
+    """渲染 nii.gz 三个正交位（轴/冠/矢）的中间层面，返回 base64 PNG。"""
+    img_dir = os.path.join(ROOT, 'radar_web', 'uploads', task_id, 'images')
+    path = os.path.join(img_dir, os.path.basename(filename))
+    if not os.path.isfile(path):
+        return {'ok': False, 'msg': f'文件不存在: {filename}'}
+    try:
+        proxy = nib.load(path).dataobj  # ArrayProxy 惰性读取，切片时自动应用 HU 缩放
+        x, y, z = proxy.shape[0] // 2, proxy.shape[1] // 2, proxy.shape[2] // 2
+        return {
+            'ok': True,
+            'shape': list(proxy.shape),
+            'axial': _render_slice(np.asarray(proxy[:, :, z])),    # 轴位
+            'coronal': _render_slice(np.asarray(proxy[:, y, :])),   # 冠状位
+            'sagittal': _render_slice(np.asarray(proxy[x, :, :])),   # 矢状位
+        }
+    except Exception as e:
+        return {'ok': False, 'msg': f'解析失败（文件可能不是有效 nii.gz）: {e}'}
 
 
 def run_inference(task_id, img_dir, save_dir):

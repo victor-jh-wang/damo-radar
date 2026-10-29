@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RADAR 腹部 CT 推理</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+         background: #f0f2f5; color: #333; padding: 24px; }
+  .container { max-width: 1200px; margin: 0 auto; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  .sub { color: #888; font-size: 13px; margin-bottom: 20px; }
+  .card { background: #fff; border-radius: 10px; padding: 20px;
+          box-shadow: 0 1px 4px rgba(0,0,0,.08); margin-bottom: 16px; }
+
+  /* 拖拽区 */
+  #dropzone { border: 2px dashed #b8c4d0; border-radius: 10px; padding: 40px;
+              text-align: center; color: #888; cursor: pointer; transition: .2s; }
+  #dropzone.dragover { border-color: #1677ff; background: #e6f4ff; color: #1677ff; }
+  #dropzone .icon { font-size: 40px; display: block; margin-bottom: 8px; }
+  #filelist { margin-top: 12px; font-size: 13px; color: #555; text-align: left; }
+  #filelist div { padding: 3px 0; }
+
+  button { background: #1677ff; color: #fff; border: none; border-radius: 6px;
+           padding: 10px 32px; font-size: 15px; cursor: pointer; margin-top: 14px; }
+  button:disabled { background: #a8c1e8; cursor: not-allowed; }
+  button#resetBtn { background: #999; margin-left: 10px; display: none; }
+
+  /* 日志区 */
+  #logbox { background: #1e1e1e; color: #d4d4d4; font-family: Menlo, Consolas, monospace;
+            font-size: 12px; border-radius: 8px; padding: 14px; height: 240px;
+            overflow-y: auto; white-space: pre-wrap; word-break: break-all; display: none; }
+
+  /* 结果表格 */
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { border: 1px solid #e5e5e5; padding: 6px 10px; text-align: left; }
+  th { background: #fafafa; position: sticky; top: 0; }
+  td.num { text-align: right; font-family: monospace; }
+  tr.hidden-row { display: none; }
+  .badge-high { background: #ff4d4f; color: #fff; border-radius: 4px; padding: 1px 6px; }
+  .badge-mid { background: #faad14; color: #fff; border-radius: 4px; padding: 1px 6px; }
+  #resultwrap { overflow-x: auto; max-height: 480px; overflow-y: auto; }
+  .toolbar { margin-bottom: 10px; font-size: 13px; display: flex; gap: 16px; align-items: center; }
+  #probFilter { padding: 3px; }
+  #downloadBtn { margin-top: 0; padding: 5px 14px; font-size: 13px; }
+
+  .status { padding: 4px 12px; border-radius: 12px; font-size: 12px; }
+  .status.running { background: #e6f4ff; color: #1677ff; }
+  .status.error { background: #fff1f0; color: #cf1322; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>RADAR 腹部 CT 通用诊断</h1>
+  <div class="sub">上传腹部增强 CT（nii.gz）→ 推理 → 展示 168 项器官-疾病概率</div>
+
+  <div class="card">
+    <div id="dropzone">
+      <span class="icon">📁</span>
+      拖拽 nii.gz 文件到此处，或点击选择文件（支持多选）
+    </div>
+    <input type="file" id="fileInput" multiple accept=".nii,.nii.gz" hidden>
+    <div id="filelist"></div>
+    <button id="startBtn" disabled>开始推理</button>
+    <button id="resetBtn">重置</button>
+    <span id="status" class="status" style="display:none"></span>
+  </div>
+
+  <div class="card">
+    <div id="logbox"></div>
+  </div>
+
+  <div class="card" id="resultcard" style="display:none">
+    <div class="toolbar">
+      <b>推理结果</b>
+      <label>仅显示概率 ≥ <input type="number" id="probFilter" value="0.5" step="0.05" min="0" max="1" style="width:64px"></label>
+      <button id="downloadBtn">下载 CSV</button>
+    </div>
+    <div id="resultwrap"></div>
+  </div>
+</div>
+
+<script>
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+const filelist = document.getElementById('filelist');
+const startBtn = document.getElementById('startBtn');
+const resetBtn = document.getElementById('resetBtn');
+const logbox = document.getElementById('logbox');
+const statusEl = document.getElementById('status');
+const resultcard = document.getElementById('resultcard');
+const resultwrap = document.getElementById('resultwrap');
+const probFilter = document.getElementById('probFilter');
+const downloadBtn = document.getElementById('downloadBtn');
+
+let files = [];
+let lastCsvText = null;
+let ws = null;
+
+dropzone.onclick = () => fileInput.click();
+dropzone.ondragover = e => { e.preventDefault(); dropzone.classList.add('dragover'); };
+dropzone.ondragleave = () => dropzone.classList.remove('dragover');
+dropzone.ondrop = e => {
+  e.preventDefault(); dropzone.classList.remove('dragover');
+  addFiles([...e.dataTransfer.files]);
+};
+fileInput.onchange = () => addFiles([...fileInput.files]);
+
+function addFiles(fs) {
+  fs = fs.filter(f => f.name.endsWith('.nii.gz') || f.name.endsWith('.nii'));
+  files = files.concat(fs);
+  renderFiles();
+}
+
+function renderFiles() {
+  filelist.innerHTML = files.map((f, i) =>
+    `<div>${i+1}. ${f.name} (${(f.size/1024/1024).toFixed(1)} MB) <a href="#" onclick="removeFile(${i});return false" style="color:#1677ff">删除</a></div>`
+  ).join('');
+  startBtn.disabled = files.length === 0;
+}
+
+window.removeFile = i => { files.splice(i, 1); renderFiles(); };
+
+function setStatus(text, cls) {
+  statusEl.style.display = 'inline';
+  statusEl.textContent = text;
+  statusEl.className = 'status ' + (cls || '');
+}
+
+startBtn.onclick = () => {
+  const taskId = 'task_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  startBtn.disabled = true;
+  logbox.style.display = 'block';
+  logbox.textContent = '';
+  setStatus('正在连接...', 'running');
+
+  // 先连 WebSocket，再上传
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws/${taskId}`);
+
+  ws.onopen = () => {
+    appendLog('[Web] WebSocket 已连接，开始上传文件...');
+    const fd = new FormData();
+    files.forEach(f => fd.append('files', f, f.name));
+    fetch(`/api/infer/${taskId}`, { method: 'POST', body: fd })
+      .then(r => r.json())
+      .then(d => {
+        if (!d.ok) { setStatus(d.msg, 'error'); appendLog('[错误] ' + d.msg); startBtn.disabled = false; }
+        else setStatus('推理中...', 'running');
+      })
+      .catch(e => { setStatus('上传失败: ' + e, 'error'); startBtn.disabled = false; });
+  };
+
+  ws.onmessage = ev => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === 'log') {
+      appendLog(msg.text);
+    } else if (msg.type === 'result') {
+      if (msg.error) {
+        setStatus('推理失败: ' + msg.error, 'error');
+      } else {
+        setStatus('完成', 'running');
+        renderResult(msg.result);
+      }
+      ws.close();
+      resetBtn.style.display = 'inline';
+    }
+  };
+
+  ws.onerror = () => { setStatus('WebSocket 连接失败', 'error'); startBtn.disabled = false; };
+};
+
+function appendLog(text) {
+  // tqdm 的 \r 进度条：若日志行已存在则替换最后一行
+  if (text.startsWith('Infer:') && logbox.lastChild && logbox.lastChild.textContent.startsWith('Infer:')) {
+    logbox.lastChild.textContent = text;
+  } else {
+    const line = document.createElement('div');
+    line.textContent = text;
+    logbox.appendChild(line);
+  }
+  logbox.scrollTop = logbox.scrollHeight;
+}
+
+function renderResult(records) {
+  resultcard.style.display = 'block';
+  if (!records || !records.length) {
+    resultwrap.innerHTML = '<p>无结果（文件可能被跳过，请检查日志）</p>';
+    return;
+  }
+  const keys = Object.keys(records[0]).filter(k => k !== 'file_name');
+
+  // 汇总 CSV 文本用于下载
+  const header = ['file_name', ...keys].join(',');
+  const rows = records.map(r => [r.file_name, ...keys.map(k => r[k] ?? '')].join(','));
+  lastCsvText = [header, ...rows].join('\n');
+
+  const html = [];
+  for (const r of records) {
+    html.push(`<h3 style="margin:14px 0 8px">${r.file_name}</h3><table><thead><tr><th>检查项</th><th>概率</th></tr></thead><tbody>`);
+    const items = keys
+      .map(k => ({ k, v: parseFloat(r[k]) }))
+      .filter(x => !isNaN(x.v))
+      .sort((a, b) => b.v - a.v);
+    for (const it of items) {
+      const cls = it.v >= parseFloat(probFilter.value) ? '' : 'hidden-row';
+      const badge = it.v >= 0.5 ? 'badge-high' : (it.v >= 0.3 ? 'badge-mid' : '');
+      html.push(`<tr class="${cls}" data-prob="${it.v}"><td>${it.k}${badge ? ` <span class="${badge}">${badge === 'badge-high' ? '高' : '中'}</span>` : ''}</td><td class="num">${it.v.toFixed(3)}</td></tr>`);
+    }
+    html.push('</tbody></table>');
+  }
+  resultwrap.innerHTML = html.join('');
+
+  // 下载 CSV
+  downloadBtn.onclick = () => {
+    if (!lastCsvText) return;
+    const blob = new Blob(['\ufeff' + lastCsvText], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'radar_results.csv';
+    a.click();
+  };
+}
+
+probFilter.onchange = () => {
+  const th = parseFloat(probFilter.value);
+  resultwrap.querySelectorAll('tr[data-prob]').forEach(tr => {
+    tr.classList.toggle('hidden-row', parseFloat(tr.dataset.prob) < th);
+  });
+};
+
+resetBtn.onclick = () => {
+  files = []; renderFiles();
+  logbox.textContent = ''; logbox.style.display = 'none';
+  resultcard.style.display = 'none'; lastCsvText = null;
+  statusEl.style.display = 'none';
+  resetBtn.style.display = 'none';
+  if (ws) { ws.close(); ws = null; }
+};
+</script>
+</body>
+</html>

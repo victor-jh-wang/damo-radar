@@ -145,6 +145,7 @@ async def ws_logs(ws: WebSocket, task_id: str):
                 if task.get('error'):
                     payload['error'] = task['error']
                 await ws.send_json(payload)
+                await ws.close()   # 正常关闭（code 1000），避免浏览器报连接丢失
                 break
             await asyncio.sleep(0.3)
     except WebSocketDisconnect:

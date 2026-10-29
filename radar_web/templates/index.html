@@ -153,16 +153,14 @@ window.openViewer = async filename => {
   document.getElementById('viewerTitle').textContent = '影像预览: ' + filename + '（加载中...）';
   viewerModal.style.display = 'flex';
   try {
-    const { NiiVue, SLICE_TYPE } = await import('/static/niivue.js');
+    const { NiiVue } = await import('/static/niivue.js');
     if (nvInstance) { nvInstance.destroy(); nvInstance = null; }
-    const canvas = document.getElementById('nvCanvas');
     nvInstance = new NiiVue({ isRadiological: false });
-    await nvInstance.attachTo(canvas);
+    await nvInstance.attachTo('nvCanvas');  // 此版本要求传 id 字符串，不是 canvas 元素
     await nvInstance.addVolume({
       url: `/api/file/${curTaskId}/${encodeURIComponent(filename)}`,
       name: filename,
     });
-    nvInstance.sliceType = SLICE_TYPE.MULTIPLANAR;
     document.getElementById('viewerTitle').textContent = '影像预览: ' + filename;
   } catch (e) {
     document.getElementById('viewerTitle').textContent = '预览失败: ' + e;

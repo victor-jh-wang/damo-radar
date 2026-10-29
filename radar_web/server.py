@@ -24,11 +24,48 @@ sys.path.insert(0, os.path.join(ROOT, 'RADAR_inference'))
 os.chdir(os.path.join(ROOT, 'RADAR_inference'))  # evaluate() 内部使用相对路径 ../ckpt
 
 import pandas as pd
-import torch
 from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
-from inference_demo import initialize, evaluate
+# ---- Mock 模式（本地调试用）----
+# 启动方式: RADAR_WEB_MOCK=1 uvicorn radar_web.server:app --port 8000
+# 该模式下不加载真实模型、不 import inference_demo（无需 torch/GPU），
+# 用假输出模拟完整推理流程，用于在本机调试 radar_web 的页面/接口/日志流。
+MOCK_MODE = os.environ.get('RADAR_WEB_MOCK', '') == '1'
+
+if MOCK_MODE:
+    import time
+
+    def initialize():
+        print('--> [MOCK] initialize() 被调用，模拟加载模型...')
+        time.sleep(2)
+        print('--> [MOCK] 模型加载完成')
+        return 'mock_pad_func', 'mock_model'
+
+    def evaluate(pad_func, model, img_dir, save_dir, save_tag):
+        files = [f for f in os.listdir(img_dir) if f.endswith('.nii.gz')]
+        fake_items = ['肝_肝囊肿 (Liver_Hepatic cyst)', '肾_囊肿 (Kidney_Cyst)',
+                      '肝_脂肪肝 (Liver_Fatty liver)', '胆囊_结石 (Gallbladder_Gallstones)']
+        import random
+        random.seed(42)
+        results = []
+        for i, f in enumerate(files):
+            print(f'-- [MOCK] 正在推理 {f} ({i+1}/{len(files)}) ...')
+            for step in range(5):
+                time.sleep(0.3)
+                print(f'Infer: {int((step+1)/5*100)}%|{f[:12]}')
+            row = {'file_name': f}
+            row.update({k: round(random.random(), 3) for k in fake_items})
+            results.append(row)
+            print(f'-- [MOCK] {f} 完成')
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, f'RADAR_infer_results_{save_tag}.csv')
+        pd.DataFrame(results, columns=['file_name'] + fake_items).to_csv(
+            save_path, index=False, encoding='utf-8-sig')
+        print(f'-- [MOCK] 结果已写入 {save_path}')
+else:
+    import torch
+    from inference_demo import initialize, evaluate
 
 app = FastAPI(title='RADAR Web Inference')
 
@@ -150,7 +187,8 @@ def run_inference(task_id, img_dir, save_dir):
         with contextlib.redirect_stdout(TaskLogCaptor(task)), \
              contextlib.redirect_stderr(TaskLogCaptor(task)):
             evaluate(MODEL['pad'], MODEL['model'], img_dir, save_dir, task_id)
-        torch.cuda.empty_cache()
+        if not MOCK_MODE:
+            torch.cuda.empty_cache()
 
         csv_path = os.path.join(save_dir, f'RADAR_infer_results_{task_id}.csv')
         df = pd.read_csv(csv_path, encoding='utf-8-sig')

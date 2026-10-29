@@ -48,6 +48,19 @@ uvicorn radar_web.server:app --host 0.0.0.0 --port 8000
 
 > 云服务器需在安全组放行 8000 端口。
 
+## 本地调试（Mock 模式，无需 GPU / torch）
+
+在自己的 Mac 上不加载真实模型，用假输出模拟完整推理流程，用于调试页面、上传接口和日志流：
+
+```bash
+RADAR_WEB_MOCK=1 uvicorn radar_web.server:app --port 8000
+```
+
+Mock 模式下：
+- 不 import `inference_demo`，不需要 torch / GPU / 权重文件，只装 `radar_web/requirements.txt` 即可运行
+- `initialize()` 变为 2 秒假加载；`evaluate()` 会对每个上传文件模拟约 2 秒推理并输出进度日志
+- 结果为随机概率的 4 个示例检查项（肝囊肿、肾囊肿、脂肪肝、胆囊结石），仅用于验证前端表格/CSV 下载
+
 ## 使用方法
 
 1. 在 3D Slicer 中将院内 DICOM 目标序列（门静脉期薄层轴位）导出为 `.nii.gz`

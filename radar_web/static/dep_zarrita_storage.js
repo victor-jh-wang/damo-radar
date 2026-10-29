@@ -1,0 +1,8 @@
+/**
+ * Bundled by jsDelivr using Rollup v4.62.2 and esbuild v0.28.1.
+ * Original file: /npm/@zarrita/storage@0.2.0/dist/src/fetch.js
+ *
+ * Do NOT use SRI with dynamically generated files! More information: https://www.jsdelivr.com/using-sri-with-dynamic-files
+ */
+function g(h,t){return{...h,...t,headers:{...h.headers,...t.headers}}}function u(h,t){const e=typeof h=="string"?new URL(h):h;e.pathname.endsWith("/")||(e.pathname+="/");const s=new URL(t.slice(1),e);return s.search=e.search,s}async function f(h){if(h.status!==404){if(h.status===200||h.status===206)return new Uint8Array(await h.arrayBuffer());throw new Error(`Unexpected response status ${h.status} ${h.statusText}`)}}class R{url;#e;#s;#h;constructor(t,e={}){this.url=t,this.#e=e.fetch??(s=>fetch(s)),this.#s=e.overrides??{},this.#h=e.useSuffixRequest??!1}#t(t,e){return new Request(t,g(this.#s,e))}async get(t,e={}){let s=u(this.url,t).href,a=this.#t(s,e),r=await this.#e(a);return f(r)}async getRange(t,e,s={}){let a=u(this.url,t),r;if("suffixLength"in e)r=await this.#r(a,e.suffixLength,s);else{let i={...s,headers:{...s.headers,Range:`bytes=${e.offset}-${e.offset+e.length-1}`}},n=this.#t(a,i);r=await this.#e(n)}return f(r)}async#r(t,e,s){if(this.#h){let d={...s,headers:{...s.headers,Range:`bytes=-${e}`}};return this.#e(this.#t(t,d))}let a=this.#t(t,{...s,method:"HEAD"}),r=await this.#e(a);if(!r.ok)return r;let i=r.headers.get("Content-Length"),n=Number(i),l=n-e,c={...s,headers:{...s.headers,Range:`bytes=${l}-${n-1}`}};return this.#e(this.#t(t,c))}}export{R as default};
+//# sourceMappingURL=/sm/7a53da8517754cc9999b3c908b049a2ef7ac96e8d43380fc751d71b1186d7d5b.map

@@ -18,7 +18,6 @@ import time
 import asyncio
 import threading
 import contextlib
-import numpy as np
 
 # ---- 路径引导（必须在 import inference_demo 之前）----
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -257,27 +256,28 @@ def _segment_one(task_id, img_path, save_dir):
     slices = dense_patch_slices(image_size, roi_size, scan_interval)
     num_win = len(slices)
 
-    full_mask = torch.zeros((1, 37) + tuple(image_size), device='cuda', dtype=torch.float16)
-    count_map = torch.zeros_like(full_mask)
+    # 显存优化：不聚合 37 通道概率体（约3GB 会 OOM），逐窗 argmax 后直接写标签体（约20MB）
+    stitched = torch.zeros(tuple(image_size), device='cuda', dtype=torch.uint8)
     model = MODEL['model']
+    key = f'{task_id}/{fname}'
     with torch.no_grad():
         for wi, sl in enumerate(slices):
-            win_idx = [slice(None), slice(None)] + list(sl)
+            win_idx = tuple([slice(None), slice(None)] + list(sl))
             patch = image[win_idx]
             seg = model.visual_encoder(patch, None)[0]        # [1, 37, d, h, w] softmax 概率
             seg = F.interpolate(seg, size=patch.shape[2:], mode='trilinear')
-            full_mask[win_idx] += seg.half()
-            count_map[win_idx] += 1
-            if (wi + 1) % 10 == 0 or wi + 1 == num_win:
-                append_log(task, f'Seg: {(wi + 1) / num_win * 100:.0f}% ({wi + 1}/{num_win} windows)')
-
-    stitched = (full_mask.float() / count_map.float().clamp(min=1)).argmax(1)[0]  # [D, W, H] 0..36
-    if not MOCK_MODE:
-        torch.cuda.empty_cache()
+            stitched[win_idx[2:]] = seg.argmax(1)[0]
+            if (wi + 1) % 5 == 0 or wi + 1 == num_win:
+                pct = int((wi + 1) / num_win * 100)
+                append_log(task, f'Seg: {pct}% ({wi + 1}/{num_win} windows)')
+                with SEG_STATE_LOCK:
+                    if SEG_STATE.get(key) == 'running':
+                        SEG_STATE[key] = ('running', pct)
+    torch.cuda.empty_cache()
 
     # 保存：seg_ct（预处理后 CT）与 seg_mask 同 shape/spacing，niivue 中天然对齐
-    mask_arr = stitched.cpu().numpy().astype(np.uint8).transpose(2, 1, 0)   # [H, W, D]
-    ct_arr = image[0].float().cpu().numpy().transpose(2, 1, 0)              # [H, W, D]
+    mask_arr = stitched.cpu().numpy().transpose(2, 1, 0)                 # [H, W, D]
+    ct_arr = image[0, 0].float().cpu().numpy().transpose(2, 1, 0)        # [H, W, D]
     for arr, name in ((mask_arr, mask_name), (ct_arr, ct_name)):
         im = sitk.GetImageFromArray(arr)
         im.SetSpacing((1.0, 1.0, 5.0))   # 预处理目标 spacing：面内 1mm，层间 5mm
@@ -329,8 +329,10 @@ def api_segment_status(task_id: str, filename: str):
     key = f'{task_id}/{fname}'
     with SEG_STATE_LOCK:
         st = SEG_STATE.get(key)
-    if isinstance(st, tuple):
+    if isinstance(st, tuple) and st and st[0] == 'error':
         return {'ok': False, 'msg': st[1]}
+    if isinstance(st, tuple) and st and st[0] == 'running':
+        return {'ok': True, 'status': 'running', 'progress': st[1] if len(st) > 1 else 0}
     return {'ok': True, 'status': 'running' if st == 'running' else 'pending'}
 
 

@@ -20,11 +20,12 @@ radar_web/
 全新机器从零到跑通（约 10-15 分钟），逐段执行：
 
 ```bash
-# 1. Miniconda
+# 1. Miniconda + 写入 .bashrc（以后每个新终端 conda 直接可用并自动激活 radar 环境）
 wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /root/mc.sh
 bash /root/mc.sh -b -p /root/miniconda3
-source /root/miniconda3/etc/profile.d/conda.sh
 rm /root/mc.sh
+echo 'source /root/miniconda3/etc/profile.d/conda.sh' >> ~/.bashrc
+source ~/.bashrc
 
 # 2. 代码
 git clone https://github.com/victor-jh-wang/damo-radar.git /root/repo/damo-radar
@@ -34,6 +35,7 @@ cd /root/repo/damo-radar
 conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
 conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 conda create -n radar python=3.10 -y
+echo 'conda activate radar' >> ~/.bashrc
 conda activate radar
 pip install -r requirements.txt -r radar_web/requirements.txt
 

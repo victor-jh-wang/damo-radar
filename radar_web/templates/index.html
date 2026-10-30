@@ -240,33 +240,24 @@ function setStatus(text, cls) {
   statusEl.className = 'status ' + (cls || '');
 }
 
-startBtn.onclick = () => {
-  const taskId = curTaskId;
-  startBtn.disabled = true;
-  gotResult = false;
-  logbox.style.display = 'block';
-  logbox.textContent = '';
-  setStatus('正在连接...', 'running');
+let logCount = 0;       // 已收到的日志条数，断线重连时作为 since 续传
 
-  // 先连 WebSocket，再触发推理（文件在拖入时已上传）
+function connectWS(taskId) {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/ws/${taskId}`);
+  ws = new WebSocket(`${proto}://${location.host}/ws/${taskId}?since=${logCount}`);
 
   ws.onopen = () => {
-    appendLog('[Web] WebSocket 已连接，开始推理...');
-    fetch(`/api/infer/${taskId}?start=1`, { method: 'POST', body: new FormData() })
-      .then(r => r.json())
-      .then(d => {
-        if (!d.ok) { setStatus(d.msg, 'error'); appendLog('[错误] ' + d.msg); startBtn.disabled = false; }
-        else setStatus('推理中...', 'running');
-      })
-      .catch(e => { setStatus('启动推理失败: ' + e, 'error'); startBtn.disabled = false; });
+    if (!gotResult && logCount === 0) appendLog('[Web] WebSocket 已连接，开始推理...');
+    else appendLog('[Web] 日志连接已恢复，继续接收...');
+    setStatus('推理中...', 'running');
   };
 
   ws.onmessage = ev => {
     const msg = JSON.parse(ev.data);
+    if (msg.type === 'ping') return;                    // 心跳，忽略
     if (msg.type === 'log') {
       appendLog(msg.text);
+      logCount++;
     } else if (msg.type === 'result') {
       gotResult = true;
       if (msg.error) {
@@ -279,21 +270,35 @@ startBtn.onclick = () => {
     }
   };
 
-  // 结果已收到后，连接由服务端正常关闭，close/error 不再视为故障
   ws.onclose = () => {
-    if (!gotResult) {
-      setStatus('连接已断开', 'error');
-      appendLog('[错误] WebSocket 连接已断开');
-      startBtn.disabled = false;
-    }
+    if (gotResult) return;
+    // 推理单例耗时数分钟，RunPod 代理可能掐空闲连接；任务仍在后台跑，3 秒后重连续传日志
+    appendLog('[Web] 连接中断，3 秒后自动重连（推理仍在后台进行）...');
+    setStatus('重连中...', 'running');
+    setTimeout(() => { if (!gotResult) connectWS(taskId); }, 3000);
   };
-  ws.onerror = () => {
-    if (!gotResult) {
-      setStatus('WebSocket 连接失败', 'error');
-      appendLog('[错误] WebSocket 连接失败');
-      startBtn.disabled = false;
-    }
-  };
+  ws.onerror = () => { /* 由 onclose 统一处理重连 */ };
+}
+
+startBtn.onclick = () => {
+  startBtn.disabled = true;
+  gotResult = false;
+  logCount = 0;
+  logbox.style.display = 'block';
+  logbox.textContent = '';
+  setStatus('正在连接...', 'running');
+  const taskId = curTaskId;
+
+  connectWS(taskId);
+
+  // 触发推理（文件在拖入时已上传）
+  fetch(`/api/infer/${taskId}?start=1`, { method: 'POST', body: new FormData() })
+    .then(r => r.json())
+    .then(d => {
+      if (!d.ok) { setStatus(d.msg, 'error'); appendLog('[错误] ' + d.msg); startBtn.disabled = false; }
+      else setStatus('推理中...', 'running');
+    })
+    .catch(e => { setStatus('启动推理失败: ' + e, 'error'); startBtn.disabled = false; });
 };
 
 function appendLog(text) {

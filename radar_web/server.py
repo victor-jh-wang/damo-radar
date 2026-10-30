@@ -14,6 +14,7 @@ import sys
 import os
 import io
 import json
+import time
 import asyncio
 import threading
 import contextlib
@@ -129,10 +130,12 @@ def index():
 
 # ---------------- WebSocket 日志流 ----------------
 @app.websocket('/ws/{task_id}')
-async def ws_logs(ws: WebSocket, task_id: str):
+async def ws_logs(ws: WebSocket, task_id: str, since: int = 0):
+    """日志流。since=已收到的日志条数，断线重连时从该位置续传。空闲时发心跳防止代理掐断。"""
     await ws.accept()
     task = get_task(task_id)
-    sent = 0
+    sent = max(0, since)
+    last_send = time.time()
     try:
         while True:
             with TASKS_LOCK:
@@ -140,6 +143,7 @@ async def ws_logs(ws: WebSocket, task_id: str):
             while sent < len(logs):
                 await ws.send_json({'type': 'log', 'text': logs[sent]})
                 sent += 1
+                last_send = time.time()
             if task['done'] and sent >= len(task['logs']):
                 payload = {'type': 'result', 'result': task['result']}
                 if task.get('error'):
@@ -147,6 +151,10 @@ async def ws_logs(ws: WebSocket, task_id: str):
                 await ws.send_json(payload)
                 await ws.close()   # 正常关闭（code 1000），避免浏览器报连接丢失
                 break
+            # 心跳：推理单例耗时数分钟无日志，RunPod 等代理会掐空闲连接
+            if time.time() - last_send > 5:
+                await ws.send_json({'type': 'ping'})
+                last_send = time.time()
             await asyncio.sleep(0.3)
     except WebSocketDisconnect:
         pass

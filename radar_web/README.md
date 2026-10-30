@@ -26,7 +26,11 @@ git clone https://github.com/victor-jh-wang/damo-radar.git
 bash damo-radar/radar_web/setup_runpod.sh
 ```
 
-脚本 `radar_web/setup_runpod.sh` 会依次：装 Miniconda → 建 radar 环境 → 装两套依赖 → 下载权重（每步已存在则跳过，可重复执行）→ 前台启动 uvicorn。全程约 10-15 分钟。
+脚本 `radar_web/setup_runpod.sh` 会依次：装 Miniconda → 建 radar 环境 → 装两套依赖 → 下载权重（每步已存在则跳过，可重复执行）。全程约 10-15 分钟。脚本不启动服务，部署完成后手动启动：
+
+```bash
+uvicorn radar_web.server:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 3
+```
 
 > 注意：不要把命令放进 RunPod 的 "Container start command"——该框不按标准 shell 方式执行命令，多行/重定向会失败。请通过 Jupyter Lab 或 SSH 终端操作。
 

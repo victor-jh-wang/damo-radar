@@ -38,7 +38,7 @@ if [ ! -f "$REPO/ckpt/checkpoint_radar_pretrain.pth" ]; then
     cd "$REPO"
 fi
 
-# 4. 启动（前台运行）
-echo "==> All ready, starting uvicorn ..."
+# 4. 部署完成（服务由用户手动启动）
 cd "$REPO"
-exec uvicorn radar_web.server:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 3
+echo "==> 部署完成。手动启动服务："
+echo "    uvicorn radar_web.server:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 3"

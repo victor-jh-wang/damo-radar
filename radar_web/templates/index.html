@@ -138,7 +138,7 @@ function addFiles(fs) {
 
 function renderFiles() {
   filelist.innerHTML = files.map((f, i) =>
-    `<div>${i+1}. ${f.name} (${(f.size/1024/1024).toFixed(1)} MB) <a href="#" onclick="removeFile(${i});return false" style="color:#1677ff">删除</a></div>`
+    `<div>${i+1}. ${f.name} (${(f.size/1024/1024).toFixed(1)} MB) <a href="#" onclick="previewLocal(${i});return false" style="color:#1677ff">预览</a> <a href="#" onclick="removeFile(${i});return false" style="color:#1677ff">删除</a></div>`
   ).join('');
   startBtn.disabled = files.length === 0;
 }
@@ -149,23 +149,32 @@ window.removeFile = i => { files.splice(i, 1); renderFiles(); };
 const viewerModal = document.getElementById('viewerModal');
 let nvInstance = null;
 
-window.openViewer = async filename => {
-  document.getElementById('viewerTitle').textContent = '影像预览: ' + filename + '（加载中...）';
+async function showVolume(url, title) {
+  document.getElementById('viewerTitle').textContent = title + '（加载中...）';
   viewerModal.style.display = 'flex';
   try {
     const { NiiVue } = await import('/static/niivue.js');
     if (nvInstance) { nvInstance.destroy(); nvInstance = null; }
     nvInstance = new NiiVue({ isRadiological: false });
     await nvInstance.attachTo('nvCanvas');  // 此版本要求传 id 字符串，不是 canvas 元素
-    await nvInstance.addVolume({
-      url: `/api/file/${curTaskId}/${encodeURIComponent(filename)}`,
-      name: filename,
-    });
-    document.getElementById('viewerTitle').textContent = '影像预览: ' + filename;
+    await nvInstance.addVolume({ url, name: title });
+    document.getElementById('viewerTitle').textContent = title;
   } catch (e) {
     document.getElementById('viewerTitle').textContent = '预览失败: ' + e;
     console.error(e);
   }
+}
+
+// 上传前：直接读本地文件（Blob URL），不经服务器
+window.previewLocal = async i => {
+  const f = files[i];
+  if (!f) return;
+  await showVolume(URL.createObjectURL(f), f.name);
+};
+
+// 推理后：从服务器取回文件渲染
+window.openViewer = async filename => {
+  await showVolume(`/api/file/${curTaskId}/${encodeURIComponent(filename)}`, filename);
 };
 
 window.closeViewer = () => {

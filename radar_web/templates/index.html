@@ -53,10 +53,6 @@
   .gitem .gval { font-family: monospace; margin-left: 8px; flex-shrink: 0; }
   .gitem.dim { opacity: .38; }
   .gitem.hidden-row, tr.hidden-row { display: none; }
-  .gitem.r-high { background: #fff1f0; }
-  .gitem.r-mid { background: #fffbe6; }
-  .badge-high { background: #ff4d4f; color: #fff; border-radius: 4px; padding: 0 5px; font-size: 11px; }
-  .badge-mid { background: #faad14; color: #fff; border-radius: 4px; padding: 0 5px; font-size: 11px; }
   #resultwrap { overflow-x: auto; }
   .toolbar { margin-bottom: 10px; font-size: 13px; display: flex; gap: 16px; align-items: center; }
   #probFilter { padding: 3px; }
@@ -137,7 +133,7 @@
   <div class="card" id="resultcard" style="display:none">
     <div class="toolbar">
       <b>推理结果</b>
-      <label>仅显示概率 ≥ <input type="number" id="probFilter" value="0.5" step="0.05" min="0" max="1" style="width:64px"></label>
+      <label>仅显示概率 ≥ <input type="number" id="probFilter" value="0.8" step="0.05" min="0" max="1" style="width:64px"></label>
       <button id="downloadBtn">下载 CSV</button>
     </div>
     <div id="resultwrap"></div>
@@ -338,10 +334,20 @@ window.removeFile = i => { files.splice(i, 1); renderFiles(); updateStartBtn(); 
 const viewerModal = document.getElementById('viewerModal');
 let nvInstance = null;
 
+// 用全新 canvas 元素替换旧的，彻底清掉上一帧画面。
+// （不能 getContext('2d').clearRect：canvas 已绑定 WebGL 上下文后 2d 返回 null，静默失效）
+function resetCanvas(id) {
+  const old = document.getElementById(id);
+  const fresh = document.createElement('canvas');
+  fresh.id = old.id;
+  fresh.className = old.className;
+  old.replaceWith(fresh);
+}
+
 async function showVolume(url, title) {
   // 先清掉上一次的渲染，避免加载期间还显示旧影像
   if (nvInstance) { try { nvInstance.destroy(); } catch(e) {} nvInstance = null; }
-  document.getElementById('nvCanvas').getContext('2d')?.clearRect(0, 0, 1e4, 1e4);
+  resetCanvas('nvCanvas');
   document.getElementById('viewerTitle').textContent = title + '（加载中...）';
   document.getElementById('viewerHint').textContent = '鼠标左键拖动 = 平移/切换层面 · 滚轮 = 缩放 · 右键拖动 = 调节窗宽窗位';
   viewerModal.style.display = 'flex';
@@ -431,7 +437,7 @@ window.runSegment = async (idx, btn) => {
 
 function showSegViewer(fname, cached) {
   if (nvInstance) { try { nvInstance.destroy(); } catch(e) {} nvInstance = null; }
-  document.getElementById('nvCanvas').getContext('2d')?.clearRect(0, 0, 1e4, 1e4);
+  resetCanvas('nvCanvas');
   document.getElementById('viewerTitle').textContent = fname + (cached ? '（打开中...）' : '（分割加载中...）');
   document.getElementById('viewerHint').textContent = '彩色为器官分割 · 左键拖动切换层面 · 滚轮缩放 · 右键拖动调窗宽窗位 · 点击下方图例可定位到对应器官';
   viewerModal.style.display = 'flex';
@@ -571,6 +577,8 @@ diseaseModal.addEventListener('click', ev => { if (ev.target === diseaseModal) c
 window.openDiseaseView = (fileName, organ) => {
   if (dnvL) { try { dnvL.destroy(); } catch (e) {} dnvL = null; }
   if (dnvR) { try { dnvR.destroy(); } catch (e) {} dnvR = null; }
+  resetCanvas('dCanvasL');
+  resetCanvas('dCanvasR');
   const localFile = (files.find(f => f.file.name === fileName) || {}).file;
   document.getElementById('dTitle').textContent = `${organ} — ${fileName}`;
   document.getElementById('dStatusL').textContent = localFile ? '加载原始 CT...' : '本地文件不可用（页面已重置）';
@@ -789,18 +797,17 @@ function renderResult(records) {
     const safeName = r.file_name.replace(/'/g, "\\'");
     html.push(`<details${r === maxFile ? ' open' : ''}>` +
       `<summary>${r.file_name}` +
-      `<span class="topline">最高: ${top.k} ${top.v.toFixed(2)}</span>` +
+      `<span class="topline">最高: ${top.k} ${(top.v * 100).toFixed(1)}%</span>` +
       `<span class="viewBtn" onclick="event.stopPropagation();openViewer('${safeName}')">查看影像</span></summary>` +
       `<div class="body"><div class="grid">`);
     const th = parseFloat(probFilter.value);
     for (const it of items) {
-      const badge = it.v >= 0.5 ? ' <span class="badge-high">高</span>' : (it.v >= 0.3 ? ' <span class="badge-mid">中</span>' : '');
-      const rowCls = (it.v >= 0.5 ? 'r-high' : it.v >= 0.3 ? 'r-mid' : '') + (it.v < th ? ' hidden-row' : '');
+      const rowCls = (it.v < th ? ' hidden-row' : '');
       const organ = it.k.split(' (')[0].split('_')[0];   // 疾病键格式：器官_疾病 (英文)
       html.push(`<div class="gitem ${rowCls}" data-prob="${it.v}" title="点击定位到该器官" ` +
         `data-organ="${organ}" data-file="${r.file_name.replace(/"/g, '&quot;')}">` +
-        `<span class="glabel">${it.k}${badge}</span>` +
-        `<span class="gval">${it.v.toFixed(3)}</span></div>`);
+        `<span class="glabel">${it.k}</span>` +
+        `<span class="gval">${(it.v * 100).toFixed(1)}%</span></div>`);
     }
     html.push('</div></div></details>');
   }

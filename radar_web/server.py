@@ -18,6 +18,7 @@ import time
 import asyncio
 import threading
 import contextlib
+import numpy as np
 
 # ---- 路径引导（必须在 import inference_demo 之前）----
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -205,13 +206,132 @@ async def api_infer(task_id: str, files: list[UploadFile] = File(None), start: i
 # ---------------- 影像预览（前端 niivue 渲染）----------------
 @app.get('/api/file/{task_id}/{filename}')
 def api_file(task_id: str, filename: str):
-    """返回任务目录下的原始 nii.gz，供前端 niivue 渲染。"""
-    img_dir = os.path.join(ROOT, 'radar_web', 'uploads', task_id, 'images')
-    path = os.path.join(img_dir, os.path.basename(filename))
-    if not os.path.isfile(path):
-        return {'ok': False, 'msg': f'文件不存在: {filename}'}
-    return FileResponse(path, media_type='application/gzip',
-                        filename=os.path.basename(filename))
+    """返回任务目录下的原始 nii.gz，供前端 niivue 渲染。images 里没有则查 results（分割产物）。"""
+    fname = os.path.basename(filename)
+    for sub in ('images', 'results'):
+        path = os.path.join(ROOT, 'radar_web', 'uploads', task_id, sub, fname)
+        if os.path.isfile(path):
+            return FileResponse(path, media_type='application/gzip', filename=fname)
+    return {'ok': False, 'msg': f'文件不存在: {filename}'}
+
+
+# ---------------- 器官分割（复用主模型 UNet，零侵入）----------------
+SEG_STATE = {}          # key=task/filename -> 'running' | 'done' | ('error', msg)
+SEG_STATE_LOCK = threading.Lock()
+
+
+def _segment_one(task_id, img_path, save_dir):
+    """对单个 nii.gz 跑 37 类器官分割，输出 seg_ct / seg_mask 两个 nii.gz（同一预处理坐标系）。"""
+    import shutil
+    fname = os.path.basename(img_path)
+    ct_name = f'seg_ct_{fname}'
+    mask_name = f'seg_mask_{fname}'
+    task = get_task(task_id)
+
+    if MOCK_MODE:
+        # mock：直接拷贝原文件充当两个产物，仅用于本地调试 UI
+        time.sleep(2)
+        shutil.copyfile(img_path, os.path.join(save_dir, ct_name))
+        shutil.copyfile(img_path, os.path.join(save_dir, mask_name))
+        append_log(task, f'--> [MOCK] 分割完成: {mask_name}')
+        return
+
+    # 真实模式依赖放在 mock 分支之后，保证 Mac 调试环境无需 torch
+    import torch
+    import torch.nn.functional as F
+    import SimpleITK as sitk
+    from monai.data.utils import dense_patch_slices
+    from inference_demo import DataFolder, _get_scan_interval
+
+    append_log(task, f'--> 器官分割开始: {fname}')
+    df = DataFolder(os.path.dirname(img_path))
+    idx = next(i for i, p in enumerate(df.img_paths) if os.path.basename(p) == fname)
+    image, _, _ = df[idx]            # [1, D, W, H]，已重采样/HU窗/裁剪/pad，与主推理完全同款
+    image = image[None].cuda()       # [1, 1, D, W, H]
+
+    roi_size = (96, 256, 384)
+    overlap = 0.25
+    image_size = list(image.shape[2:])
+    num_spatial_dims = len(image.shape) - 2
+    scan_interval = _get_scan_interval(image_size, roi_size, num_spatial_dims, overlap)
+    slices = dense_patch_slices(image_size, roi_size, scan_interval)
+    num_win = len(slices)
+
+    full_mask = torch.zeros((1, 37) + tuple(image_size), device='cuda', dtype=torch.float16)
+    count_map = torch.zeros_like(full_mask)
+    model = MODEL['model']
+    with torch.no_grad():
+        for wi, sl in enumerate(slices):
+            win_idx = [slice(None), slice(None)] + list(sl)
+            patch = image[win_idx]
+            seg = model.visual_encoder(patch, None)[0]        # [1, 37, d, h, w] softmax 概率
+            seg = F.interpolate(seg, size=patch.shape[2:], mode='trilinear')
+            full_mask[win_idx] += seg.half()
+            count_map[win_idx] += 1
+            if (wi + 1) % 10 == 0 or wi + 1 == num_win:
+                append_log(task, f'Seg: {(wi + 1) / num_win * 100:.0f}% ({wi + 1}/{num_win} windows)')
+
+    stitched = (full_mask.float() / count_map.float().clamp(min=1)).argmax(1)[0]  # [D, W, H] 0..36
+    if not MOCK_MODE:
+        torch.cuda.empty_cache()
+
+    # 保存：seg_ct（预处理后 CT）与 seg_mask 同 shape/spacing，niivue 中天然对齐
+    mask_arr = stitched.cpu().numpy().astype(np.uint8).transpose(2, 1, 0)   # [H, W, D]
+    ct_arr = image[0].float().cpu().numpy().transpose(2, 1, 0)              # [H, W, D]
+    for arr, name in ((mask_arr, mask_name), (ct_arr, ct_name)):
+        im = sitk.GetImageFromArray(arr)
+        im.SetSpacing((1.0, 1.0, 5.0))   # 预处理目标 spacing：面内 1mm，层间 5mm
+        sitk.WriteImage(im, os.path.join(save_dir, name))
+    append_log(task, f'--> 器官分割完成: {mask_name}')
+
+
+@app.post('/api/segment/{task_id}/{filename}')
+def api_segment_start(task_id: str, filename: str):
+    fname = os.path.basename(filename)
+    img_path = os.path.join(ROOT, 'radar_web', 'uploads', task_id, 'images', fname)
+    if not os.path.isfile(img_path):
+        return {'ok': False, 'msg': f'文件不存在: {fname}'}
+    save_dir = os.path.join(ROOT, 'radar_web', 'uploads', task_id, 'results')
+    os.makedirs(save_dir, exist_ok=True)
+    if os.path.isfile(os.path.join(save_dir, f'seg_mask_{fname}')):
+        return {'ok': True, 'status': 'done'}          # 已有缓存
+    if not MODEL_READY.is_set() and not MOCK_MODE:
+        return {'ok': False, 'msg': '模型尚未加载完成，请稍后重试'}
+
+    key = f'{task_id}/{fname}'
+    with SEG_STATE_LOCK:
+        if SEG_STATE.get(key) == 'running':
+            return {'ok': True, 'status': 'running'}
+        SEG_STATE[key] = 'running'
+
+    def _run():
+        try:
+            with GPU_LOCK:                              # 与主推理共用 GPU 串行锁
+                _segment_one(task_id, img_path, save_dir)
+            with SEG_STATE_LOCK:
+                SEG_STATE[key] = 'done'
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            with SEG_STATE_LOCK:
+                SEG_STATE[key] = ('error', str(e))
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {'ok': True, 'status': 'running'}
+
+
+@app.get('/api/segment/{task_id}/{filename}')
+def api_segment_status(task_id: str, filename: str):
+    fname = os.path.basename(filename)
+    save_dir = os.path.join(ROOT, 'radar_web', 'uploads', task_id, 'results')
+    if os.path.isfile(os.path.join(save_dir, f'seg_mask_{fname}')):
+        return {'ok': True, 'status': 'done'}
+    key = f'{task_id}/{fname}'
+    with SEG_STATE_LOCK:
+        st = SEG_STATE.get(key)
+    if isinstance(st, tuple):
+        return {'ok': False, 'msg': st[1]}
+    return {'ok': True, 'status': 'running' if st == 'running' else 'pending'}
 
 
 def run_inference(task_id, img_dir, save_dir):

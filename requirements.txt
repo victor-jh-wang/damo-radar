@@ -35,5 +35,3 @@ nibabel
 matplotlib
 nltk
 huggingface_hub
-hf_transfer
-numpy<2

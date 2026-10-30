@@ -2,3 +2,5 @@ fastapi
 uvicorn[standard]
 python-multipart
 pandas
+numpy<2
+hf_transfer

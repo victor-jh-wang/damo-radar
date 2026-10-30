@@ -41,5 +41,4 @@ fi
 # 4. 部署完成（服务由用户手动启动）
 cd "$REPO"
 echo "==> 部署完成。手动启动服务："
-echo "    bash radar_web/start.sh          # 默认 0.0.0.0:8000"
-echo "    bash radar_web/start.sh 9000     # 自定义端口"
+echo "    uvicorn radar_web.server:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 3"

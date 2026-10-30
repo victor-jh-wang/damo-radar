@@ -150,11 +150,13 @@ const viewerModal = document.getElementById('viewerModal');
 let nvInstance = null;
 
 async function showVolume(url, title) {
+  // 先清掉上一次的渲染，避免加载期间还显示旧影像
+  if (nvInstance) { try { nvInstance.destroy(); } catch(e) {} nvInstance = null; }
+  document.getElementById('nvCanvas').getContext('2d')?.clearRect(0, 0, 1e4, 1e4);
   document.getElementById('viewerTitle').textContent = title + '（加载中...）';
   viewerModal.style.display = 'flex';
   try {
     const { NiiVue } = await import('/static/niivue.js');
-    if (nvInstance) { nvInstance.destroy(); nvInstance = null; }
     nvInstance = new NiiVue({ isRadiological: false });
     await nvInstance.attachTo('nvCanvas');  // 此版本要求传 id 字符串，不是 canvas 元素
     await nvInstance.addVolume({ url, name: title });

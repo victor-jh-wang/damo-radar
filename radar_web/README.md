@@ -15,38 +15,43 @@ radar_web/
 └── uploads/           # 运行时自动生成：上传文件与推理结果（可定期清理）
 ```
 
-## 部署步骤（服务器）
+## 部署步骤（RunPod / 通用 GPU 服务器）
 
-### 1. 克隆仓库并下载权重
-
-```bash
-git clone https://github.com/victor-jh-wang/damo-radar.git
-cd damo-radar
-python download_scripts/download_checkpoints.py --local-dir ./ckpt
-```
-
-### 2. 创建 conda 环境，安装两套依赖
+全新机器从零到跑通（约 10-15 分钟），逐段执行：
 
 ```bash
+# 1. Miniconda
+wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /root/mc.sh
+bash /root/mc.sh -b -p /root/miniconda3
+source /root/miniconda3/etc/profile.d/conda.sh
+rm /root/mc.sh
+
+# 2. 代码
+git clone https://github.com/victor-jh-wang/damo-radar.git /root/repo/damo-radar
+cd /root/repo/damo-radar
+
+# 3. conda 环境 + 依赖
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 conda create -n radar python=3.10 -y
 conda activate radar
+pip install -r requirements.txt -r radar_web/requirements.txt
 
-# 官方推理依赖（仓库根 requirements）
-pip install -r requirements.txt
+# 4. 权重（约 1.5GB，默认下载到仓库 ckpt/ 目录）
+cd download_scripts
+python download_checkpoints.py
+cd ..
 
-# Web 服务依赖
-pip install -r radar_web/requirements.txt
-```
-
-### 3. 启动服务（必须在仓库根目录）
-
-```bash
+# 5. 启动（必须在仓库根目录）
 uvicorn radar_web.server:app --host 0.0.0.0 --port 8000
 ```
 
-启动后模型自动加载入显存（约需 1-2 分钟），加载完成后即可访问 `http://<服务器IP>:8000`。
+说明：
 
-> 云服务器需在安全组放行 8000 端口。
+- 启动后模型自动加载入显存（约 1-2 分钟），**看到 `Model ready.` 才算就绪**
+- 国内网络下载权重不通时，第 4 步前执行 `export HF_ENDPOINT=https://hf-mirror.com`
+- RunPod 需在 Pod 设置 Expose HTTP ports 中加入 `8000`（改配置会重置 pod，务必先改配置再装环境）
+- 日常更新代码只需 `git pull` 后重启 uvicorn，环境不用动
 
 ## 本地调试（Mock 模式，无需 GPU / torch）
 

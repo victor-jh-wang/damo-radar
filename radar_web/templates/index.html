@@ -151,7 +151,36 @@ function addFiles(fs) {
 
 const CHUNK = 8 * 1024 * 1024;  // 8MB 分块，避免代理对大 POST 的超时限制
 
+function fmtSpeed(bytesPerSec) {
+  if (bytesPerSec >= 1024*1024) return (bytesPerSec/1024/1024).toFixed(1) + ' MB/s';
+  if (bytesPerSec >= 1024) return (bytesPerSec/1024).toFixed(0) + ' KB/s';
+  return bytesPerSec.toFixed(0) + ' B/s';
+}
+
+// 平滑动画：从当前百分比渐变到目标，期间实时显示网速
+function animateProgress(idx, targetPct, bytesPerSec) {
+  const row = filelist.children[idx];
+  if (!row) return;
+  const bar = row.querySelector('.bar');
+  const pt = row.querySelector('.progtext');
+  const item = files[idx];
+  const state = item._prog || (item._prog = { raf: null, cur: 0 });
+  state.speed = bytesPerSec;
+  if (state.raf) cancelAnimationFrame(state.raf);
+  const step = () => {
+    state.cur += (targetPct - state.cur) * 0.2;
+    if (Math.abs(targetPct - state.cur) < 0.3) state.cur = targetPct;
+    bar.style.width = state.cur + '%';
+    pt.textContent = Math.round(state.cur) + '% · ' + fmtSpeed(state.speed || 0);
+    if (state.cur < targetPct) state.raf = requestAnimationFrame(step);
+    else state.raf = null;
+  };
+  state.raf = requestAnimationFrame(step);
+}
+
 function setProgress(idx, pct, text) {
+  const item = files[idx];
+  if (item && item._prog && item._prog.raf) { cancelAnimationFrame(item._prog.raf); item._prog.raf = null; }
   const row = filelist.children[idx];
   if (!row) return;
   row.querySelector('.bar').style.width = pct + '%';
@@ -170,6 +199,7 @@ async function uploadOne(idx) {
     while (offset < f.size) {
       const chunk = f.slice(offset, Math.min(offset + CHUNK, f.size));
       let ok = false, lastErr = null;
+      const t0 = performance.now();
       for (let tryN = 0; tryN < 3 && !ok; tryN++) {   // 每块最多重试 3 次
         try {
           const r = await fetch(`${url}?offset=${offset}`, { method: 'POST', body: chunk });
@@ -181,7 +211,9 @@ async function uploadOne(idx) {
       }
       if (!ok) throw lastErr || '分块上传失败';
       offset += chunk.size;
-      setProgress(idx, Math.round(offset / f.size * 100));
+      // 该块实耗时 → 平均网速，进度条平滑滚动到新位置
+      const secs = (performance.now() - t0) / 1000;
+      animateProgress(idx, Math.round(offset / f.size * 100), chunk.size / secs);
     }
     item.status = 'ok';
   } catch (e) {

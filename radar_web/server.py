@@ -154,22 +154,28 @@ async def ws_logs(ws: WebSocket, task_id: str):
 
 # ---------------- 上传 + 推理 ----------------
 @app.post('/api/infer/{task_id}')
-async def api_infer(task_id: str, files: list[UploadFile] = File(...)):
-    if not MODEL_READY.is_set():
-        return {'ok': False, 'msg': '模型尚未加载完成，请稍后重试'}
-
+async def api_infer(task_id: str, files: list[UploadFile] = File(None), start: int = 1):
     task_dir = os.path.join(ROOT, 'radar_web', 'uploads', task_id)
     img_dir = os.path.join(task_dir, 'images')
     save_dir = os.path.join(task_dir, 'results')
     os.makedirs(img_dir, exist_ok=True)
 
-    for f in files:
+    for f in files or []:
         dest = os.path.join(img_dir, os.path.basename(f.filename))
         with open(dest, 'wb') as out:
             out.write(await f.read())
 
+    if not start:
+        return {'ok': True, 'msg': f'已上传 {len(files or [])} 个文件'}
+
+    n_imgs = len([f for f in os.listdir(img_dir) if f.endswith(('.nii.gz', '.nii'))])
+    if not n_imgs:
+        return {'ok': False, 'msg': '任务目录中没有影像文件'}
+
+    if not MODEL_READY.is_set():
+        return {'ok': False, 'msg': '模型尚未加载完成，请稍后重试'}
     threading.Thread(target=run_inference, args=(task_id, img_dir, save_dir), daemon=True).start()
-    return {'ok': True, 'msg': f'已接收 {len(files)} 个文件，推理已启动'}
+    return {'ok': True, 'msg': f'推理已启动（共 {n_imgs} 个影像）'}
 
 
 # ---------------- 影像预览（前端 niivue 渲染）----------------

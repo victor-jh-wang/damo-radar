@@ -17,7 +17,19 @@ radar_web/
 
 ## 部署步骤（RunPod / 通用 GPU 服务器）
 
-全新机器从零到跑通（约 10-15 分钟），逐段执行：
+### 方式一：RunPod 启动命令全自动（推荐）
+
+把下面这**一行**填进 Pod 的 Container start command，开机自动完成全部部署并启动服务（重复执行幂等，已装的步骤自动跳过）：
+
+```
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/victor-jh-wang/damo-radar/main/radar_web/setup_runpod.sh)"
+```
+
+> 注意：RunPod 启动命令不支持多行粘贴（会被压成一行导致参数错乱），所以必须用这种单行远程脚本方式。部署日志在 `/root/setup.log`。
+
+### 方式二：手动逐段执行
+
+全新机器从零到跑通（约 10-15 分钟）：
 
 ```bash
 # 1. Miniconda + 写入 .bashrc（以后每个新终端 conda 直接可用并自动激活 radar 环境）

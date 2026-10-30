@@ -45,14 +45,14 @@
   #resultwrap summary .topline { font-weight: normal; font-size: 12px; color: #888;
                                  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #resultwrap .body { padding: 4px 14px 12px; }
-  /* 检查项：自适应两列网格，比单列表格省一半高度 */
+  /* 检查项：两列网格 */
   .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 18px; }
-  @media (min-width: 1000px) { .grid { grid-template-columns: repeat(3, 1fr); } }
   .gitem { display: flex; justify-content: space-between; align-items: center;
             padding: 3px 6px; border-radius: 4px; font-size: 12.5px; }
   .gitem .glabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .gitem .gval { font-family: monospace; margin-left: 8px; flex-shrink: 0; }
   .gitem.dim { opacity: .38; }
+  .gitem.hidden-row, tr.hidden-row { display: none; }
   .gitem.r-high { background: #fff1f0; }
   .gitem.r-mid { background: #fffbe6; }
   .badge-high { background: #ff4d4f; color: #fff; border-radius: 4px; padding: 0 5px; font-size: 11px; }
@@ -412,9 +412,10 @@ function renderResult(records) {
       `<span class="topline">最高: ${top.k} ${top.v.toFixed(2)}</span>` +
       `<span class="viewBtn" onclick="event.stopPropagation();openViewer('${safeName}')">查看影像</span></summary>` +
       `<div class="body"><div class="grid">`);
+    const th = parseFloat(probFilter.value);
     for (const it of items) {
       const badge = it.v >= 0.5 ? ' <span class="badge-high">高</span>' : (it.v >= 0.3 ? ' <span class="badge-mid">中</span>' : '');
-      const rowCls = it.v >= 0.5 ? 'r-high' : (it.v >= 0.3 ? 'r-mid' : '');
+      const rowCls = (it.v >= 0.5 ? 'r-high' : it.v >= 0.3 ? 'r-mid' : '') + (it.v < th ? ' hidden-row' : '');
       html.push(`<div class="gitem ${rowCls}" data-prob="${it.v}">` +
         `<span class="glabel">${it.k}${badge}</span>` +
         `<span class="gval">${it.v.toFixed(3)}</span></div>`);
@@ -437,7 +438,7 @@ function renderResult(records) {
 probFilter.onchange = () => {
   const th = parseFloat(probFilter.value);
   resultwrap.querySelectorAll('.gitem').forEach(el => {
-    el.classList.toggle('dim', parseFloat(el.dataset.prob) < th);
+    el.classList.toggle('hidden-row', parseFloat(el.dataset.prob) < th);
   });
 };
 

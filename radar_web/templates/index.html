@@ -85,6 +85,30 @@
   .prog .bar.ok { background: #52c41a; }
   .prog .bar.err { background: #cf1322; }
   .progtext { font-size: 12px; color: #666; }
+
+  /* 器官图例（分割查看器 / 疾病定位弹窗共用）*/
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px;
+            max-height: 96px; overflow: auto; }
+  .legend .lg { display: inline-flex; align-items: center; gap: 5px;
+               font-size: 12px; color: #444; }
+  .legend .lg i { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+
+  /* 疾病项 → 双视图器官定位弹窗 */
+  #diseaseModal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5);
+                 z-index: 200; justify-content: center; align-items: center; }
+  #diseaseModal .panel { background: #fff; border-radius: 10px; padding: 20px;
+                        max-width: 1400px; width: 96vw; max-height: 94vh; overflow: auto; }
+  #diseaseModal h3 { margin-bottom: 8px; }
+  #diseaseModal .hint { font-size: 12px; color: #888; margin-bottom: 10px; }
+  .dcols { display: flex; gap: 14px; }
+  .dcol { flex: 1; min-width: 0; }
+  .dcol h4 { margin: 0 0 6px; font-size: 13px; color: #555; font-weight: normal; }
+  #dCanvasL, #dCanvasR { width: 100%; height: 480px; background: #000; border-radius: 6px; }
+  #diseaseModal .close { margin-top: 12px; }
+
+  /* 结果页疾病项：可点击定位 */
+  .gitem { cursor: pointer; }
+  .gitem:hover { outline: 1px solid #1677ff; background: #f0f7ff; }
 </style>
 </head>
 <body>
@@ -129,7 +153,21 @@
       </div>
     </div>
     <canvas id="nvCanvas"></canvas>
+    <div class="legend" id="segLegend"></div>
     <button class="close" onclick="closeViewer()">关闭</button>
+  </div>
+</div>
+
+<div id="diseaseModal">
+  <div class="panel">
+    <h3 id="dTitle">器官定位</h3>
+    <div class="hint">左：原始 CT · 右：CT + 器官分割 · 左键拖动切换层面 · 滚轮缩放 · 右键拖动调窗宽窗位 · 点击疾病项可定位到对应器官中心</div>
+    <div class="dcols">
+      <div class="dcol"><h4 id="dStatusL">原始 CT</h4><canvas id="dCanvasL"></canvas></div>
+      <div class="dcol"><h4 id="dStatusR">器官分割</h4><canvas id="dCanvasR"></canvas></div>
+    </div>
+    <div class="legend" id="dLegend"></div>
+    <button class="close" onclick="closeDiseaseView()">关闭</button>
   </div>
 </div>
 
@@ -417,6 +455,7 @@ function showSegViewer(fname, cached) {
       await nvInstance.addVolume({ url: new File([ctBuf], 'seg_ct.nii.gz'), name: 'seg_ct' });
       await nvInstance.addVolume({ url: new File([maskBuf], 'seg_mask.nii.gz'), name: 'seg_mask', colormapLabel: { min: 0, lut: organLUT() } });
       document.getElementById('viewerTitle').textContent = fname + '（器官分割）';
+      renderLegend('segLegend', fname);
     } catch (e) {
       hideDlProgress();
       document.getElementById('viewerTitle').textContent = '分割显示失败: ' + e;
@@ -424,6 +463,135 @@ function showSegViewer(fname, cached) {
     }
   })();
 }
+
+// ---- 器官图例 / 疾病项定位 ----
+function organColorCSS(lab) {
+  const h = (lab * 137.508) % 360, s = 0.72, v = 0.95;
+  const f = (n) => { const k = (n + h / 60) % 6; return v - v * s * Math.max(Math.min(k, 4 - k, 1), 0); };
+  return `rgb(${Math.round(f(5) * 255)},${Math.round(f(3) * 255)},${Math.round(f(1) * 255)})`;
+}
+
+const segMetaCache = {};   // fname -> meta json | null
+
+async function fetchSegMeta(fname) {
+  if (segMetaCache[fname] !== undefined) return segMetaCache[fname];
+  try {
+    const r = await fetch(`/api/file/${curTaskId}/${encodeURIComponent('seg_meta_' + fname)}`);
+    segMetaCache[fname] = r.ok ? await r.json() : null;
+  } catch (e) {
+    segMetaCache[fname] = null;
+  }
+  return segMetaCache[fname];
+}
+
+async function renderLegend(id, fname) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const meta = await fetchSegMeta(fname);
+  if (!meta || !meta.organs || !Object.keys(meta.organs).length) {
+    el.innerHTML = '<span style="color:#999;font-size:12px">无图例（旧版分割结果缺少元数据，重新分割后可显示）</span>';
+    return;
+  }
+  const names = Object.keys(meta.organs).sort((a, b) => meta.organs[a].label - meta.organs[b].label);
+  el.innerHTML = names.map(n =>
+    `<span class="lg"><i style="background:${organColorCSS(meta.organs[n].label)}"></i>${n}</span>`).join('');
+}
+
+// 确保分割结果可用（内存缓存 -> 服务端缓存 -> 触发分割），返回 {ctBuf, maskBuf}
+async function ensureSeg(fname, onStatus) {
+  if (segCache[fname]) return segCache[fname];
+  onStatus?.('分割中 0%');
+  logbox.style.display = 'block';
+  appendLog(`[Web] 开始器官分割: ${fname}`);
+  const r = await fetch(`/api/segment/${curTaskId}/${encodeURIComponent(fname)}`, { method: 'POST', body: new FormData() });
+  const d = await r.json();
+  if (!d.ok) throw d.msg || '启动分割失败';
+  let st;
+  do {
+    await new Promise(res => setTimeout(res, 2000));
+    const r2 = await fetch(`/api/segment/${curTaskId}/${encodeURIComponent(fname)}?since=${logCount}`);
+    st = await r2.json();
+    if (st.logs && st.logs.length) {
+      logCount += st.logs.length;
+      st.logs.forEach(appendLog);
+    }
+    if (!st.ok) throw st.msg || '分割失败';
+    if (st.status === 'running') onStatus?.('分割中 ' + (st.progress ?? 0) + '%');
+  } while (st.status !== 'done');
+  onStatus?.('下载分割结果...');
+  const ctUrl = `/api/file/${curTaskId}/${encodeURIComponent('seg_ct_' + fname)}`;
+  const maskUrl = `/api/file/${curTaskId}/${encodeURIComponent('seg_mask_' + fname)}`;
+  const [ctBuf, maskBuf] = await Promise.all([fetchWithProgress(ctUrl), fetchWithProgress(maskUrl)]);
+  segCache[fname] = { ctBuf, maskBuf };
+  return segCache[fname];
+}
+
+// 点击疾病项：左右双视图（原始 CT / 分割叠加），自动定位到该器官中心
+let dnvL = null, dnvR = null;
+const diseaseModal = document.getElementById('diseaseModal');
+
+window.closeDiseaseView = () => {
+  if (dnvL) { try { dnvL.destroy(); } catch (e) {} dnvL = null; }
+  if (dnvR) { try { dnvR.destroy(); } catch (e) {} dnvR = null; }
+  diseaseModal.style.display = 'none';
+};
+diseaseModal.addEventListener('click', ev => { if (ev.target === diseaseModal) closeDiseaseView(); });
+
+window.openDiseaseView = (fileName, organ) => {
+  if (dnvL) { try { dnvL.destroy(); } catch (e) {} dnvL = null; }
+  if (dnvR) { try { dnvR.destroy(); } catch (e) {} dnvR = null; }
+  const localFile = (files.find(f => f.file.name === fileName) || {}).file;
+  document.getElementById('dTitle').textContent = `${organ} — ${fileName}`;
+  document.getElementById('dStatusL').textContent = localFile ? '加载原始 CT...' : '本地文件不可用（页面已重置）';
+  document.getElementById('dStatusR').textContent = '准备分割结果...';
+  document.getElementById('dLegend').innerHTML = '';
+  diseaseModal.style.display = 'flex';
+
+  (async () => {
+    // 左：原始 CT（本地文件，无网络传输）
+    if (localFile) {
+      try {
+        const { NiiVue } = await import('/static/niivue.js');
+        dnvL = new NiiVue({ isRadiological: false });
+        await dnvL.attachTo('dCanvasL');
+        await dnvL.addVolume({ url: localFile, name: 'ct' });
+        document.getElementById('dStatusL').textContent = '原始 CT';
+      } catch (e) {
+        console.error(e);
+        document.getElementById('dStatusL').textContent = '原始 CT 加载失败: ' + e;
+        dnvL = null;
+      }
+    }
+    // 右：分割叠加视图（自动触发分割/下载）
+    try {
+      const { ctBuf, maskBuf } = await ensureSeg(fileName, s => { document.getElementById('dStatusR').textContent = s; });
+      const { NiiVue } = await import('/static/niivue.js');
+      dnvR = new NiiVue({ isRadiological: false });
+      await dnvR.attachTo('dCanvasR');
+      await dnvR.addVolume({ url: new File([ctBuf], 'seg_ct.nii.gz'), name: 'seg_ct' });
+      await dnvR.addVolume({ url: new File([maskBuf], 'seg_mask.nii.gz'), name: 'seg_mask', colormapLabel: { min: 0, lut: organLUT() } });
+      document.getElementById('dStatusR').textContent = 'CT + 器官分割';
+      renderLegend('dLegend', fileName);
+      // 定位到器官中心
+      const meta = await fetchSegMeta(fileName);
+      const info = meta && meta.organs && meta.organs[organ];
+      if (info) {
+        const [cd, cw, ch] = info.centroid_seg;   // 分割坐标系 [d,w,h] -> niivue 体素 (i,j,k)=(h,w,d)
+        try { dnvR.setCrosshairPos(dnvR.vox2mm([ch, cw, cd])); } catch (e) { console.warn(e); }
+        if (dnvL && info.centroid_orig) {
+          // 原始文件体素 (i,j,k) = MONAI 轴序 [h,w,d]
+          try { dnvL.setCrosshairPos(dnvL.vox2mm(info.centroid_orig)); } catch (e) { console.warn(e); }
+        }
+        document.getElementById('dTitle').textContent = `${organ} — ${fileName}（已定位到器官中心）`;
+      } else {
+        document.getElementById('dTitle').textContent = `${organ} — ${fileName}（该器官未在分割中检出，显示整体视图）`;
+      }
+    } catch (e) {
+      console.error(e);
+      document.getElementById('dStatusR').textContent = '分割视图失败: ' + e;
+    }
+  })();
+};
 
 // ---- 带进度的文件下载（流式读取 response body）----
 const dlState = { files: 0, done: 0, received: 0, total: 0 };
@@ -595,7 +763,9 @@ function renderResult(records) {
     for (const it of items) {
       const badge = it.v >= 0.5 ? ' <span class="badge-high">高</span>' : (it.v >= 0.3 ? ' <span class="badge-mid">中</span>' : '');
       const rowCls = (it.v >= 0.5 ? 'r-high' : it.v >= 0.3 ? 'r-mid' : '') + (it.v < th ? ' hidden-row' : '');
-      html.push(`<div class="gitem ${rowCls}" data-prob="${it.v}">` +
+      const organ = it.k.split(' (')[0].split('_')[0];   // 疾病键格式：器官_疾病 (英文)
+      html.push(`<div class="gitem ${rowCls}" data-prob="${it.v}" title="点击定位到该器官" ` +
+        `data-organ="${organ}" data-file="${r.file_name.replace(/"/g, '&quot;')}">` +
         `<span class="glabel">${it.k}${badge}</span>` +
         `<span class="gval">${it.v.toFixed(3)}</span></div>`);
     }
@@ -621,9 +791,16 @@ probFilter.onchange = () => {
   });
 };
 
+// 点击疾病项 → 双视图定位到对应器官
+resultwrap.addEventListener('click', e => {
+  const g = e.target.closest('.gitem');
+  if (g && g.dataset.organ && g.dataset.file) openDiseaseView(g.dataset.file, g.dataset.organ);
+});
+
 resetBtn.onclick = () => {
   files = []; renderFiles();
   for (const k in segCache) delete segCache[k];   // 新任务清空分割缓存，防同名文件串数据
+  for (const k in segMetaCache) delete segMetaCache[k];
   logbox.textContent = ''; logbox.style.display = 'none';
   resultcard.style.display = 'none'; lastCsvText = null;
   statusEl.style.display = 'none';

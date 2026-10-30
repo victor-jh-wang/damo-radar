@@ -217,8 +217,90 @@ def api_file(task_id: str, filename: str):
 
 
 # ---------------- 器官分割（复用主模型 UNet，零侵入）----------------
+# 36 器官名（顺序 = 标签-1，与官方 vision_branch.py / inference_demo.py 的 organs 列表一致）
+ORGANS = ['肾上腺', '主动脉', '竖脊肌', '脑', '锁骨', '大肠', '十二指肠', '食管', '面部', '股骨',
+          '胆囊', '臀肌', '心脏', '髋关节', '肱骨', '髂动脉', '髂静脉', '髂腰肌', '下腔静脉', '肾',
+          '肝', '肺', '胰腺', '门静脉', '肺动脉', '肋骨', '骶骨', '肩胛骨', '小肠', '脾',
+          '胃', '气管', '膀胱', '颈椎', '腰椎', '胸椎']
+
 SEG_STATE = {}          # key=task/filename -> 'running' | 'done' | ('error', msg)
 SEG_STATE_LOCK = threading.Lock()
+
+
+def _preprocess_for_seg(img_path):
+    """复刻 inference_demo.DataFolder.__getitem__ 的预处理（官方逻辑的逐行拷贝，零侵入）。
+    额外返回几何信息（resize 比例、crop 起点），用于把分割质心映射回原始文件坐标系。"""
+    import numpy as np
+    from monai import transforms
+
+    data = {"image": img_path}
+    res = transforms.LoadImaged(keys=["image"], image_only=False, ensure_channel_first=True)(data)
+    image = res["image"]
+
+    affine = res["image_meta_dict"]["affine"]
+    spacing = (
+        abs(affine[0, 0].item()),
+        abs(affine[1, 1].item()),
+        abs(affine[2, 2].item())
+    )
+    _, h, w, d = image.shape
+
+    ref_spacing = (1.0, 1.0, 5.0)
+    scale = [spacing[i] / ref_spacing[i] for i in range(3)]
+    target_size = [int(h * scale[1]), int(w * scale[0]), int(d * scale[2])]  # [H', W', D']
+
+    trans = transforms.Compose(
+        [
+            transforms.Resized(spatial_size=target_size, keys=["image"], mode="trilinear"),
+            transforms.Transposed(keys=["image"], indices=(0, 3, 2, 1)),
+        ]
+    )
+    resized_data = trans(res)
+
+    img = resized_data["image"]   # [C, D', W', H']
+    img[img > 400] = 400
+    img[img < -300] = -300
+    img = (img - img.min()) / (img.max() - img.min() + 1e-8)
+
+    # crop non-zero region in image
+    roi_coords = np.nonzero(img[0].cpu().numpy())
+    min_dhw = np.min(roi_coords, axis=1)
+    max_dhw = np.max(roi_coords, axis=1)
+
+    extend_d = 5
+    extend_hw = 20
+
+    min_dhw = np.maximum(
+        min_dhw - np.array([extend_d, extend_hw, extend_hw]),
+        np.array([0, 0, 0]),
+    )
+    max_dhw = np.minimum(
+        max_dhw + np.array([extend_d, extend_hw, extend_hw]),
+        np.array(img.shape[1:]),
+    )
+
+    cropped_image = img[
+        :,
+        min_dhw[0]: max_dhw[0],
+        min_dhw[1]: max_dhw[1],
+        min_dhw[2]: max_dhw[2]
+    ]
+
+    pad_func = transforms.SpatialPadd(
+        keys=["image"],
+        spatial_size=(96, 256, 384),
+        mode='constant',
+        constant_values=0,
+        method="end"
+    )
+    padded = pad_func({"image": cropped_image})["image"].as_tensor()
+
+    # 几何映射信息：seg 体素 (d,w,h) -> resize 坐标 = +min_dhw -> 原始体素 = /scale（pad 只在末端无偏移）
+    geo = {
+        'min_dhw': [int(x) for x in min_dhw],
+        'scale': [float(x) for x in scale],
+    }
+    return padded, geo
 
 
 def _segment_one(task_id, img_path, save_dir):
@@ -234,21 +316,27 @@ def _segment_one(task_id, img_path, save_dir):
         time.sleep(2)
         shutil.copyfile(img_path, os.path.join(save_dir, ct_name))
         shutil.copyfile(img_path, os.path.join(save_dir, mask_name))
+        # 假 meta：前几个器官 + 中心坐标，供前端调试图例/定位
+        meta = {'organs': {n: {'label': i + 1, 'count': 100,
+                               'centroid_seg': [10, 50, 100],
+                               'centroid_orig': [100, 50, 10]}
+                           for i, n in enumerate(ORGANS[:6])}}
+        with open(os.path.join(save_dir, f'seg_meta_{fname}'), 'w', encoding='utf-8') as f:
+            json.dump(meta, f, ensure_ascii=False)
         append_log(task, f'--> [MOCK] 分割完成: {mask_name}')
         return
 
     # 真实模式依赖放在 mock 分支之后，保证 Mac 调试环境无需 torch
+    import numpy as np
     import torch
     import torch.nn.functional as F
     import SimpleITK as sitk
     from monai.data.utils import dense_patch_slices
-    from inference_demo import DataFolder, _get_scan_interval
+    from inference_demo import _get_scan_interval
 
     append_log(task, f'--> 器官分割开始: {fname}')
-    df = DataFolder(os.path.dirname(img_path))
-    idx = next(i for i, p in enumerate(df.img_paths) if os.path.basename(p) == fname)
-    image, _, _ = df[idx]            # [1, D, W, H]，已重采样/HU窗/裁剪/pad，与主推理完全同款
-    image = image[None].cuda()       # [1, 1, D, W, H]
+    image, geo = _preprocess_for_seg(img_path)   # [1, D, W, H]，与官方推理完全同款 + 几何信息
+    image = image[None].cuda()                   # [1, 1, D, W, H]
 
     roi_size = (96, 256, 384)
     overlap = 0.25
@@ -290,7 +378,33 @@ def _segment_one(task_id, img_path, save_dir):
         im = sitk.GetImageFromArray(arr)
         im.SetSpacing((1.0, 1.0, 5.0))   # 预处理目标 spacing：面内 1mm，层间 5mm
         sitk.WriteImage(im, os.path.join(save_dir, name))
-    append_log(task, f'--> 器官分割完成: {mask_name}')
+
+    # 器官质心（供前端点击疾病项时自动定位视图）
+    # centroid_seg: 分割坐标系 [d, w, h]；centroid_orig: 原始文件体素坐标 [h, w, d]（逆 resize/crop 映射）
+    organs_info = {}
+    nz = np.nonzero(mask_arr)
+    labs_flat = mask_arr[nz]
+    sx, sy, sz = geo['scale']
+    for lab in np.unique(labs_flat):
+        if lab == 0:
+            continue
+        sel = labs_flat == lab
+        cnt = int(sel.sum())
+        if cnt < 10:            # 忽略噪点
+            continue
+        cd, cw, ch = (float(nz[ax][sel].mean()) for ax in range(3))
+        d_r = cd + geo['min_dhw'][0]
+        w_r = cw + geo['min_dhw'][1]
+        h_r = ch + geo['min_dhw'][2]
+        organs_info[ORGANS[int(lab) - 1]] = {
+            'label': int(lab),
+            'count': cnt,
+            'centroid_seg': [round(cd, 1), round(cw, 1), round(ch, 1)],
+            'centroid_orig': [round(h_r / sy, 1), round(w_r / sx, 1), round(d_r / sz, 1)],
+        }
+    with open(os.path.join(save_dir, f'seg_meta_{fname}'), 'w', encoding='utf-8') as f:
+        json.dump({'organs': organs_info}, f, ensure_ascii=False)
+    append_log(task, f'--> 器官分割完成: {mask_name}（检出 {len(organs_info)} 个器官）')
 
 
 @app.post('/api/segment/{task_id}/{filename}')

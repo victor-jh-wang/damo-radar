@@ -275,9 +275,13 @@ def _segment_one(task_id, img_path, save_dir):
                         SEG_STATE[key] = ('running', pct)
     torch.cuda.empty_cache()
 
-    # 保存：seg_ct（预处理后 CT）与 seg_mask 同 shape/spacing，niivue 中天然对齐
-    mask_arr = stitched.cpu().numpy().transpose(2, 1, 0)                 # [H, W, D]
-    ct_arr = image[0, 0].float().cpu().numpy().transpose(2, 1, 0)        # [H, W, D]
+    # 保存：seg_ct 与 seg_mask 同 shape/spacing，niivue 中天然对齐。
+    # 注意轴序：预处理后数组为 [D, W, H]，D 是 5mm 层厚方向。
+    # SimpleITK GetImageFromArray 把数组最后一维作为 x 轴、第一维作为 z 轴，
+    # 因此直接写入 [D, W, H] 并设 spacing (1,1,5)：x=H(1mm), y=W(1mm), z=D(5mm)，比例才正确。
+    # （此前错误地 transpose 成 [H,W,D] 再设 (1,1,5)，导致 5mm 轴被标 1mm、1mm 轴被标 5mm，画面比例扭曲）
+    mask_arr = stitched.cpu().numpy()                                     # [D, W, H]
+    ct_arr = image[0, 0].float().cpu().numpy()                            # [D, W, H]
     for arr, name in ((mask_arr, mask_name), (ct_arr, ct_name)):
         im = sitk.GetImageFromArray(arr)
         im.SetSpacing((1.0, 1.0, 5.0))   # 预处理目标 spacing：面内 1mm，层间 5mm

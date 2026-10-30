@@ -149,29 +149,48 @@ function addFiles(fs) {
   updateStartBtn();
 }
 
-function uploadOne(idx) {
+const CHUNK = 8 * 1024 * 1024;  // 8MB 分块，避免代理对大 POST 的超时限制
+
+function setProgress(idx, pct, text) {
+  const row = filelist.children[idx];
+  if (!row) return;
+  row.querySelector('.bar').style.width = pct + '%';
+  const pt = row.querySelector('.progtext');
+  if (text !== undefined) pt.textContent = text;
+  else if (pct === 100) pt.textContent = '✓ 已上传';
+  else pt.textContent = pct + '%';
+}
+
+async function uploadOne(idx) {
   const item = files[idx];
-  const fd = new FormData();
-  fd.append('files', item.file, item.file.name);
-  const xhr = new XMLHttpRequest();
-  xhr.open('POST', `/api/infer/${curTaskId}?start=0`);
-  xhr.upload.onprogress = ev => {
-    if (ev.lengthComputable) {
-      const pct = Math.round(ev.loaded / ev.total * 100);
-      const row = filelist.children[idx];
-      if (row) {
-        row.querySelector('.bar').style.width = pct + '%';
-        row.querySelector('.progtext').textContent = pct + '%';
+  const f = item.file;
+  const url = `/api/upload/${curTaskId}/${encodeURIComponent(f.name)}`;
+  let offset = 0;
+  try {
+    while (offset < f.size) {
+      const chunk = f.slice(offset, Math.min(offset + CHUNK, f.size));
+      let ok = false, lastErr = null;
+      for (let tryN = 0; tryN < 3 && !ok; tryN++) {   // 每块最多重试 3 次
+        try {
+          const r = await fetch(`${url}?offset=${offset}`, { method: 'POST', body: chunk });
+          const d = await r.json();
+          if (d.ok && d.size === offset + chunk.size) ok = true;
+          else lastErr = '服务端校验不符';
+          if (!ok && tryN < 2) await new Promise(res => setTimeout(res, 1500));
+        } catch (e) { lastErr = e; if (tryN < 2) await new Promise(res => setTimeout(res, 1500)); }
       }
+      if (!ok) throw lastErr || '分块上传失败';
+      offset += chunk.size;
+      setProgress(idx, Math.round(offset / f.size * 100));
     }
-  };
-  xhr.onload = () => {
-    item.status = (xhr.status === 200) ? 'ok' : 'err';
-    item.uploaded = item.status === 'ok';
-    renderFiles(); updateStartBtn();
-  };
-  xhr.onerror = () => { item.status = 'err'; renderFiles(); updateStartBtn(); };
-  xhr.send(fd);
+    item.status = 'ok';
+  } catch (e) {
+    item.status = 'err';
+    console.error(f.name, e);
+  }
+  if (item.status === 'ok') setProgress(idx, 100);
+  else setProgress(idx, 0, '✗ 上传失败');
+  updateStartBtn();
 }
 
 function updateStartBtn() {

@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.join(ROOT, 'RADAR_inference'))
 os.chdir(os.path.join(ROOT, 'RADAR_inference'))  # evaluate() 内部使用相对路径 ../ckpt
 
 import pandas as pd
-from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -161,6 +161,22 @@ async def ws_logs(ws: WebSocket, task_id: str, since: int = 0):
 
 
 # ---------------- 上传 + 推理 ----------------
+CHUNK_SIZE = 8 * 1024 * 1024  # 8MB 分块，避免 RunPod HTTPS 代理对大 POST 的超时限制
+
+
+@app.post('/api/upload/{task_id}/{filename}')
+async def api_upload(task_id: str, filename: str, offset: int, request: Request):
+    """分块上传（裸二进制请求体）：offset=0 创建/覆盖文件，offset>0 追加。返回服务端当前文件大小供校验。"""
+    img_dir = os.path.join(ROOT, 'radar_web', 'uploads', task_id, 'images')
+    os.makedirs(img_dir, exist_ok=True)
+    dest = os.path.join(img_dir, os.path.basename(filename))
+    chunk = await request.body()
+    mode = 'ab' if offset > 0 else 'wb'
+    with open(dest, mode) as out:
+        out.write(chunk)
+    return {'ok': True, 'size': os.path.getsize(dest)}
+
+
 @app.post('/api/infer/{task_id}')
 async def api_infer(task_id: str, files: list[UploadFile] = File(None), start: int = 1):
     task_dir = os.path.join(ROOT, 'radar_web', 'uploads', task_id)

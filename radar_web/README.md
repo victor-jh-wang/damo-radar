@@ -17,15 +17,18 @@ radar_web/
 
 ## 部署步骤（RunPod / 通用 GPU 服务器）
 
-### 方式一：RunPod 启动命令（推荐，全自动）
+### 方式一：一键脚本（推荐）
 
-RunPod 的 Container start command **只支持单行**，把下面这一行填进去即可（克隆代码 + 一键装环境 + 启动，装完自动运行服务）：
+Jupyter/SSH 终端里执行两条命令（clone 到哪个目录都行，脚本自动探测）：
 
+```bash
+git clone https://github.com/victor-jh-wang/damo-radar.git
+bash damo-radar/radar_web/setup_runpod.sh
 ```
-git clone https://github.com/victor-jh-wang/damo-radar.git /root/repo/damo-radar && bash /root/repo/damo-radar/radar_web/setup_runpod.sh
-```
 
-脚本 `radar_web/setup_runpod.sh` 会依次：装 Miniconda → 建 radar 环境 → 装两套依赖 → 下载权重（每步已存在则跳过，可重复执行）→ 前台启动 uvicorn。全程约 10-15 分钟，之后服务自动就绪。
+脚本 `radar_web/setup_runpod.sh` 会依次：装 Miniconda → 建 radar 环境 → 装两套依赖 → 下载权重（每步已存在则跳过，可重复执行）→ 前台启动 uvicorn。全程约 10-15 分钟。
+
+> 注意：不要把命令放进 RunPod 的 "Container start command"——该框不按标准 shell 方式执行命令，多行/重定向会失败。请通过 Jupyter Lab 或 SSH 终端操作。
 
 ### 方式二：手动逐段执行
 

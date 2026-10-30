@@ -122,6 +122,12 @@
   <div class="panel">
     <h3 id="viewerTitle">影像预览</h3>
     <div class="hint" id="viewerHint">鼠标左键拖动 = 平移/切换层面 · 滚轮 = 缩放 · 右键拖动 = 调节窗宽窗位</div>
+    <div id="dlProgress" style="display:none;margin-bottom:8px">
+      <div style="font-size:12px;color:#888;margin-bottom:4px" id="dlProgressText">下载中...</div>
+      <div style="background:#eee;border-radius:4px;height:8px;overflow:hidden">
+        <div id="dlProgressBar" style="background:#1677ff;height:100%;width:0%;transition:width .15s"></div>
+      </div>
+    </div>
     <canvas id="nvCanvas"></canvas>
     <button class="close" onclick="closeViewer()">关闭</button>
   </div>
@@ -385,17 +391,72 @@ function showSegViewer(fname) {
   viewerModal.style.display = 'flex';
   (async () => {
     try {
+      // 先带进度地下载两个 nii.gz（大文件下载才是耗时大头），再交给 niivue 本地渲染。
+      // 注意：此版本 addVolume 不支持 data 参数，但 url 可传 File 对象（内部走 arrayBuffer，无二次网络请求）。
+      showDlProgress();
+      const [ctBuf, maskBuf] = await Promise.all([fetchWithProgress(ctUrl), fetchWithProgress(maskUrl)]);
+      hideDlProgress();
       const { NiiVue } = await import('/static/niivue.js');
       nvInstance = new NiiVue({ isRadiological: false });
       await nvInstance.attachTo('nvCanvas');
-      await nvInstance.addVolume({ url: ctUrl, name: 'seg_ct' });
-      await nvInstance.addVolume({ url: maskUrl, name: 'seg_mask', colormapLabel: { min: 0, lut: organLUT() } });
+      await nvInstance.addVolume({ url: new File([ctBuf], 'seg_ct.nii.gz'), name: 'seg_ct' });
+      await nvInstance.addVolume({ url: new File([maskBuf], 'seg_mask.nii.gz'), name: 'seg_mask', colormapLabel: { min: 0, lut: organLUT() } });
       document.getElementById('viewerTitle').textContent = fname + '（器官分割）';
     } catch (e) {
+      hideDlProgress();
       document.getElementById('viewerTitle').textContent = '分割显示失败: ' + e;
       console.error(e);
     }
   })();
+}
+
+// ---- 带进度的文件下载（流式读取 response body）----
+const dlState = { files: 0, done: 0, received: 0, total: 0 };
+
+function showDlProgress() {
+  dlState.files = 0; dlState.done = 0; dlState.received = 0; dlState.total = 0;
+  document.getElementById('dlProgress').style.display = 'block';
+  updateDlProgressUI();
+}
+
+function hideDlProgress() {
+  document.getElementById('dlProgress').style.display = 'none';
+}
+
+function updateDlProgressUI() {
+  const pct = dlState.total > 0 ? Math.round(dlState.received / dlState.total * 100) : 0;
+  const mb = n => (n / 1024 / 1024).toFixed(1);
+  document.getElementById('dlProgressBar').style.width = pct + '%';
+  document.getElementById('dlProgressText').textContent =
+    `下载分割结果中... ${pct}%（${mb(dlState.received)}${dlState.total > 0 ? ' / ' + mb(dlState.total) : ''} MB，文件 ${dlState.done}/${dlState.files}）`;
+}
+
+async function fetchWithProgress(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw `HTTP ${r.status}`;
+  const total = +(r.headers.get('Content-Length') || 0);
+  dlState.files++; if (total) dlState.total += total;
+  if (!r.body) {                    // 流式读取不可用时直接整包取
+    dlState.received += total; dlState.done++; updateDlProgressUI();
+    return await r.arrayBuffer();
+  }
+  const reader = r.body.getReader();
+  const chunks = [];
+  let received = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.length;
+    dlState.received += value.length;
+    updateDlProgressUI();
+  }
+  dlState.done++;
+  updateDlProgressUI();
+  const buf = new Uint8Array(received);
+  let off = 0;
+  for (const c of chunks) { buf.set(c, off); off += c.length; }
+  return buf;
 }
 
 window.closeViewer = () => {

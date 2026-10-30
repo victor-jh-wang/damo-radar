@@ -9,7 +9,7 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
          background: #f0f2f5; color: #333; padding: 24px; }
-  .container { max-width: 1200px; margin: 0 auto; }
+  .container { max-width: 1400px; margin: 0 auto; }
   h1 { font-size: 22px; margin-bottom: 4px; }
   .sub { color: #888; font-size: 13px; margin-bottom: 20px; }
   .card { background: #fff; border-radius: 10px; padding: 20px;
@@ -33,15 +33,31 @@
             font-size: 12px; border-radius: 8px; padding: 14px; height: 240px;
             overflow-y: auto; white-space: pre-wrap; word-break: break-all; display: none; }
 
-  /* 结果表格 */
-  table { border-collapse: collapse; width: 100%; font-size: 13px; }
-  th, td { border: 1px solid #e5e5e5; padding: 6px 10px; text-align: left; }
-  th { background: #fafafa; position: sticky; top: 0; }
-  td.num { text-align: right; font-family: monospace; }
-  tr.hidden-row { display: none; }
-  .badge-high { background: #ff4d4f; color: #fff; border-radius: 4px; padding: 1px 6px; }
-  .badge-mid { background: #faad14; color: #fff; border-radius: 4px; padding: 1px 6px; }
-  #resultwrap { overflow-x: auto; max-height: 480px; overflow-y: auto; }
+  /* 结果区：每个文件一个可折叠块 */
+  #resultwrap details { border: 1px solid #e5e5e5; border-radius: 8px; margin-bottom: 10px;
+                        background: #fff; }
+  #resultwrap summary { cursor: pointer; padding: 10px 14px; font-weight: 600; font-size: 14px;
+                        display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+                        list-style: none; user-select: none; }
+  #resultwrap summary::-webkit-details-marker { display: none; }
+  #resultwrap summary::before { content: '▸'; color: #888; transition: .15s; }
+  #resultwrap details[open] summary::before { transform: rotate(90deg); }
+  #resultwrap summary .topline { font-weight: normal; font-size: 12px; color: #888;
+                                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #resultwrap .body { padding: 4px 14px 12px; }
+  /* 检查项：自适应两列网格，比单列表格省一半高度 */
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 18px; }
+  @media (min-width: 1000px) { .grid { grid-template-columns: repeat(3, 1fr); } }
+  .gitem { display: flex; justify-content: space-between; align-items: center;
+            padding: 3px 6px; border-radius: 4px; font-size: 12.5px; }
+  .gitem .glabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .gitem .gval { font-family: monospace; margin-left: 8px; flex-shrink: 0; }
+  .gitem.dim { opacity: .38; }
+  .gitem.r-high { background: #fff1f0; }
+  .gitem.r-mid { background: #fffbe6; }
+  .badge-high { background: #ff4d4f; color: #fff; border-radius: 4px; padding: 0 5px; font-size: 11px; }
+  .badge-mid { background: #faad14; color: #fff; border-radius: 4px; padding: 0 5px; font-size: 11px; }
+  #resultwrap { overflow-x: auto; }
   .toolbar { margin-bottom: 10px; font-size: 13px; display: flex; gap: 16px; align-items: center; }
   #probFilter { padding: 3px; }
   #downloadBtn { margin-top: 0; padding: 5px 14px; font-size: 13px; }
@@ -378,18 +394,32 @@ function renderResult(records) {
   lastCsvText = [header, ...rows].join('\n');
 
   const html = [];
+  // 找出全局最高分，默认只展开该病例
+  let maxFile = records[0], maxScore = -1;
   for (const r of records) {
-    html.push(`<h3 style="margin:14px 0 8px">${r.file_name}<span class="viewBtn" onclick="openViewer('${r.file_name.replace(/'/g, "\\'")}')">查看影像</span></h3><table><thead><tr><th>检查项</th><th>概率</th></tr></thead><tbody>`);
+    const top = keys.map(k => parseFloat(r[k])).filter(v => !isNaN(v)).sort((a,b)=>b-a)[0] || -1;
+    if (top > maxScore) { maxScore = top; maxFile = r; }
+  }
+  for (const r of records) {
     const items = keys
       .map(k => ({ k, v: parseFloat(r[k]) }))
       .filter(x => !isNaN(x.v))
       .sort((a, b) => b.v - a.v);
+    const top = items[0];
+    const safeName = r.file_name.replace(/'/g, "\\'");
+    html.push(`<details${r === maxFile ? ' open' : ''}>` +
+      `<summary>${r.file_name}` +
+      `<span class="topline">最高: ${top.k} ${top.v.toFixed(2)}</span>` +
+      `<span class="viewBtn" onclick="event.stopPropagation();openViewer('${safeName}')">查看影像</span></summary>` +
+      `<div class="body"><div class="grid">`);
     for (const it of items) {
-      const cls = it.v >= parseFloat(probFilter.value) ? '' : 'hidden-row';
-      const badge = it.v >= 0.5 ? 'badge-high' : (it.v >= 0.3 ? 'badge-mid' : '');
-      html.push(`<tr class="${cls}" data-prob="${it.v}"><td>${it.k}${badge ? ` <span class="${badge}">${badge === 'badge-high' ? '高' : '中'}</span>` : ''}</td><td class="num">${it.v.toFixed(3)}</td></tr>`);
+      const badge = it.v >= 0.5 ? ' <span class="badge-high">高</span>' : (it.v >= 0.3 ? ' <span class="badge-mid">中</span>' : '');
+      const rowCls = it.v >= 0.5 ? 'r-high' : (it.v >= 0.3 ? 'r-mid' : '');
+      html.push(`<div class="gitem ${rowCls}" data-prob="${it.v}">` +
+        `<span class="glabel">${it.k}${badge}</span>` +
+        `<span class="gval">${it.v.toFixed(3)}</span></div>`);
     }
-    html.push('</tbody></table>');
+    html.push('</div></div></details>');
   }
   resultwrap.innerHTML = html.join('');
 
@@ -406,8 +436,8 @@ function renderResult(records) {
 
 probFilter.onchange = () => {
   const th = parseFloat(probFilter.value);
-  resultwrap.querySelectorAll('tr[data-prob]').forEach(tr => {
-    tr.classList.toggle('hidden-row', parseFloat(tr.dataset.prob) < th);
+  resultwrap.querySelectorAll('.gitem').forEach(el => {
+    el.classList.toggle('dim', parseFloat(el.dataset.prob) < th);
   });
 };
 

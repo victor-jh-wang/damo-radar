@@ -267,11 +267,13 @@ def _segment_one(task_id, img_path, save_dir):
             seg = model.visual_encoder(patch, None)[0]        # [1, 37, d, h, w] softmax 概率
             seg = F.interpolate(seg, size=patch.shape[2:], mode='trilinear')
             stitched[win_idx[2:]] = seg.argmax(1)[0]
-            if (wi + 1) % 5 == 0 or wi + 1 == num_win:
+            if (wi + 1) % 5 == 0 or wi + 1 == 1 or wi + 1 == num_win:
                 pct = int((wi + 1) / num_win * 100)
                 append_log(task, f'Seg: {pct}% ({wi + 1}/{num_win} windows)')
                 with SEG_STATE_LOCK:
-                    if SEG_STATE.get(key) == 'running':
+                    st = SEG_STATE.get(key)
+                    # 兼容 'running' 字符串和 ('running', pct) 元组两种形态
+                    if st == 'running' or (isinstance(st, tuple) and st and st[0] == 'running'):
                         SEG_STATE[key] = ('running', pct)
     torch.cuda.empty_cache()
 
@@ -325,19 +327,31 @@ def api_segment_start(task_id: str, filename: str):
 
 
 @app.get('/api/segment/{task_id}/{filename}')
-def api_segment_status(task_id: str, filename: str):
+def api_segment_status(task_id: str, filename: str, since: int = 0):
+    """分割状态轮询。since=已收到的日志条数，返回增量日志供前端显示。"""
     fname = os.path.basename(filename)
     save_dir = os.path.join(ROOT, 'radar_web', 'uploads', task_id, 'results')
+    logs = []
+    task = TASKS.get(task_id)
+    if task is not None:
+        with TASKS_LOCK:
+            if since < len(task['logs']):
+                logs = task['logs'][since:]
+    resp = {'ok': True, 'status': 'pending', 'logs': logs}
     if os.path.isfile(os.path.join(save_dir, f'seg_mask_{fname}')):
-        return {'ok': True, 'status': 'done'}
+        resp['status'] = 'done'
+        return resp
     key = f'{task_id}/{fname}'
     with SEG_STATE_LOCK:
         st = SEG_STATE.get(key)
     if isinstance(st, tuple) and st and st[0] == 'error':
-        return {'ok': False, 'msg': st[1]}
+        return {'ok': False, 'msg': st[1], 'logs': logs}
     if isinstance(st, tuple) and st and st[0] == 'running':
-        return {'ok': True, 'status': 'running', 'progress': st[1] if len(st) > 1 else 0}
-    return {'ok': True, 'status': 'running' if st == 'running' else 'pending'}
+        resp['status'] = 'running'
+        resp['progress'] = st[1] if len(st) > 1 else 0
+        return resp
+    resp['status'] = 'running' if st == 'running' else 'pending'
+    return resp
 
 
 def run_inference(task_id, img_dir, save_dir):

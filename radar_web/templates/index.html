@@ -344,6 +344,9 @@ window.runSegment = async (idx, btn) => {
   }
   const fname = item.file.name;
   btn.textContent = '分割中 0%';
+  // 分割日志显示在日志区（与推理共用任务日志缓冲，用全局 logCount 记录已收条数）
+  logbox.style.display = 'block';
+  appendLog(`[Web] 开始器官分割: ${fname}`);
   try {
     // 触发分割（服务端缓存过则直接返回 done）
     const r = await fetch(`/api/segment/${curTaskId}/${encodeURIComponent(fname)}`, { method: 'POST', body: new FormData() });
@@ -352,9 +355,13 @@ window.runSegment = async (idx, btn) => {
     // 轮询进度直到完成（分割约 30-60 秒）
     let st;
     do {
-      await new Promise(res => setTimeout(res, 3000));
-      const r2 = await fetch(`/api/segment/${curTaskId}/${encodeURIComponent(fname)}`);
+      await new Promise(res => setTimeout(res, 2000));
+      const r2 = await fetch(`/api/segment/${curTaskId}/${encodeURIComponent(fname)}?since=${logCount}`);
       st = await r2.json();
+      if (st.logs && st.logs.length) {
+        logCount += st.logs.length;
+        st.logs.forEach(appendLog);
+      }
       if (!st.ok) throw st.msg || '分割失败';
       if (st.status === 'running') btn.textContent = '分割中 ' + (st.progress ?? 0) + '%';
     } while (st.status !== 'done');
@@ -363,6 +370,7 @@ window.runSegment = async (idx, btn) => {
   } catch (e) {
     console.error(e);
     alert('器官分割失败: ' + e);
+    appendLog('[错误] 器官分割失败: ' + e);
     btn.textContent = '分割失败，点击重试';
   }
 };
@@ -464,8 +472,8 @@ startBtn.onclick = () => {
 };
 
 function appendLog(text) {
-  // tqdm 的 \r 进度条：若日志行已存在则替换最后一行
-  if (text.startsWith('Infer:') && logbox.lastChild && logbox.lastChild.textContent.startsWith('Infer:')) {
+  // tqdm 风格进度行（Infer:/Seg:）：若日志行已存在则替换最后一行
+  if (/^(Infer:|Seg:)/.test(text) && logbox.lastChild && /^(Infer:|Seg:)/.test(logbox.lastChild.textContent)) {
     logbox.lastChild.textContent = text;
   } else {
     const line = document.createElement('div');

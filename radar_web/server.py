@@ -379,8 +379,10 @@ def _segment_one(task_id, img_path, save_dir):
         im.SetSpacing((1.0, 1.0, 5.0))   # 预处理目标 spacing：面内 1mm，层间 5mm
         sitk.WriteImage(im, os.path.join(save_dir, name))
 
-    # 器官质心（供前端点击疾病项时自动定位视图）
-    # centroid_seg: 分割坐标系 [d, w, h]；centroid_orig: 原始文件体素坐标 [h, w, d]（逆 resize/crop 映射）
+    # 器官质心（供前端点击疾病项/图例时自动定位视图）
+    # centroid_seg: 分割数组 [d, w, h]（对应保存文件体素 (x,y,z)=(h,w,d)）
+    # centroid_orig: 原始文件 niivue 体素顺序 [x, y, z]。MONAI 空间轴为 [C, X, Y, Z]（axis1=X, axis2=Y, axis3=Z），
+    # 官方 resize 的比例配对为 axis1*scale[1]、axis2*scale[0]（逆映射须沿用同一配对），故 (x,y,z)=(h_r/sy, w_r/sx, d_r/sz)
     organs_info = {}
     nz = np.nonzero(mask_arr)
     labs_flat = mask_arr[nz]

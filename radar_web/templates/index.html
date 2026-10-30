@@ -90,7 +90,9 @@
   .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px;
             max-height: 96px; overflow: auto; }
   .legend .lg { display: inline-flex; align-items: center; gap: 5px;
-               font-size: 12px; color: #444; }
+               font-size: 12px; color: #444; cursor: pointer;
+               padding: 2px 6px; border-radius: 4px; }
+  .legend .lg:hover { background: #f0f7ff; outline: 1px solid #1677ff; }
   .legend .lg i { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
 
   /* 疾病项 → 双视图器官定位弹窗 */
@@ -431,7 +433,7 @@ function showSegViewer(fname, cached) {
   if (nvInstance) { try { nvInstance.destroy(); } catch(e) {} nvInstance = null; }
   document.getElementById('nvCanvas').getContext('2d')?.clearRect(0, 0, 1e4, 1e4);
   document.getElementById('viewerTitle').textContent = fname + (cached ? '（打开中...）' : '（分割加载中...）');
-  document.getElementById('viewerHint').textContent = '彩色为 37 类器官分割 · 左键拖动切换层面 · 滚轮缩放 · 右键拖动调窗宽窗位';
+  document.getElementById('viewerHint').textContent = '彩色为器官分割 · 左键拖动切换层面 · 滚轮缩放 · 右键拖动调窗宽窗位 · 点击下方图例可定位到对应器官';
   viewerModal.style.display = 'flex';
   (async () => {
     try {
@@ -455,7 +457,7 @@ function showSegViewer(fname, cached) {
       await nvInstance.addVolume({ url: new File([ctBuf], 'seg_ct.nii.gz'), name: 'seg_ct' });
       await nvInstance.addVolume({ url: new File([maskBuf], 'seg_mask.nii.gz'), name: 'seg_mask', colormapLabel: { min: 0, lut: organLUT() } });
       document.getElementById('viewerTitle').textContent = fname + '（器官分割）';
-      renderLegend('segLegend', fname);
+      renderLegend('segLegend', fname, (n, info) => locateSegView(nvInstance, info));
     } catch (e) {
       hideDlProgress();
       document.getElementById('viewerTitle').textContent = '分割显示失败: ' + e;
@@ -484,7 +486,7 @@ async function fetchSegMeta(fname) {
   return segMetaCache[fname];
 }
 
-async function renderLegend(id, fname) {
+async function renderLegend(id, fname, onClick) {
   const el = document.getElementById(id);
   if (!el) return;
   const meta = await fetchSegMeta(fname);
@@ -494,7 +496,36 @@ async function renderLegend(id, fname) {
   }
   const names = Object.keys(meta.organs).sort((a, b) => meta.organs[a].label - meta.organs[b].label);
   el.innerHTML = names.map(n =>
-    `<span class="lg"><i style="background:${organColorCSS(meta.organs[n].label)}"></i>${n}</span>`).join('');
+    `<span class="lg" data-organ="${n}" title="点击定位到该器官"><i style="background:${organColorCSS(meta.organs[n].label)}"></i>${n}</span>`).join('');
+  if (onClick) {
+    el.onclick = e => {
+      const g = e.target.closest('.lg');
+      if (g) onClick(g.dataset.organ, meta.organs[g.dataset.organ]);
+    };
+  }
+}
+
+// 把 niivue 十字线定位到指定体素（此版本 facade 无 vox2mm，用 vox2frac 拿场景分数坐标直接设置）
+// vox: niivue 体素顺序 [i, j, k]（即文件存储轴 x, y, z）
+function locateOrgan(nv, vox) {
+  if (!nv || !vox) return false;
+  try {
+    const frac = nv.vox2frac(vox);
+    nv.model.scene.crosshairPos = frac.map(v => Math.max(0, Math.min(1, v)));
+    nv.createOnLocationChange();
+    nv.drawScene();
+    return true;
+  } catch (e) {
+    console.warn('定位失败', e);
+    return false;
+  }
+}
+
+// 分割视图（seg_ct/seg_mask 同几何）中定位：centroid_seg=[d,w,h] -> 体素 (i,j,k)=(h,w,d)
+function locateSegView(nv, info) {
+  if (!nv || !info) return false;
+  const [cd, cw, ch] = info.centroid_seg;
+  return locateOrgan(nv, [ch, cw, cd]);
 }
 
 // 确保分割结果可用（内存缓存 -> 服务端缓存 -> 触发分割），返回 {ctBuf, maskBuf}
@@ -571,17 +602,19 @@ window.openDiseaseView = (fileName, organ) => {
       await dnvR.addVolume({ url: new File([ctBuf], 'seg_ct.nii.gz'), name: 'seg_ct' });
       await dnvR.addVolume({ url: new File([maskBuf], 'seg_mask.nii.gz'), name: 'seg_mask', colormapLabel: { min: 0, lut: organLUT() } });
       document.getElementById('dStatusR').textContent = 'CT + 器官分割';
-      renderLegend('dLegend', fileName);
-      // 定位到器官中心
+      // 双视图同步定位：右=分割几何（精确），左=原始文件体素（逆预处理映射）
       const meta = await fetchSegMeta(fileName);
-      const info = meta && meta.organs && meta.organs[organ];
-      if (info) {
-        const [cd, cw, ch] = info.centroid_seg;   // 分割坐标系 [d,w,h] -> niivue 体素 (i,j,k)=(h,w,d)
-        try { dnvR.setCrosshairPos(dnvR.vox2mm([ch, cw, cd])); } catch (e) { console.warn(e); }
-        if (dnvL && info.centroid_orig) {
-          // 原始文件体素 (i,j,k) = MONAI 轴序 [h,w,d]
-          try { dnvL.setCrosshairPos(dnvL.vox2mm(info.centroid_orig)); } catch (e) { console.warn(e); }
-        }
+      const locateBoth = (organ) => {
+        const info = meta && meta.organs && meta.organs[organ];
+        if (!info) return false;
+        locateSegView(dnvR, info);
+        locateOrgan(dnvL, info.centroid_orig);
+        return true;
+      };
+      renderLegend('dLegend', fileName, (n, info) => {
+        if (locateBoth(n)) document.getElementById('dTitle').textContent = `${n} — ${fileName}（已定位）`;
+      });
+      if (locateBoth(organ)) {
         document.getElementById('dTitle').textContent = `${organ} — ${fileName}（已定位到器官中心）`;
       } else {
         document.getElementById('dTitle').textContent = `${organ} — ${fileName}（该器官未在分割中检出，显示整体视图）`;

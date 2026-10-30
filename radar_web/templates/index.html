@@ -238,7 +238,31 @@ async function uploadOne(idx) {
   }
   if (item.status === 'ok') setProgress(idx, 100);
   else setProgress(idx, 0, '✗ 上传失败');
+  updateSegBtn(idx);   // 只更新该行分割按钮，不重渲染整个列表（避免打断其他文件的进度条动画）
   updateStartBtn();
+}
+
+// 上传结束后把该行的「分割(上传中...)」灰字换成可点按钮（或失败提示）
+function updateSegBtn(idx) {
+  const row = filelist.children[idx];
+  if (!row) return;
+  const old = row.querySelector('[data-seg]');
+  if (!old) return;
+  const it = files[idx];
+  const span = document.createElement('span');
+  span.setAttribute('data-seg', '');
+  if (it.status === 'ok') {
+    const a = document.createElement('a');
+    a.href = '#';
+    a.textContent = '分割';
+    a.style.cssText = 'color:#1677ff;margin-left:8px';
+    a.onclick = e => { e.preventDefault(); runSegment(idx, a); };
+    span.appendChild(a);
+  } else {
+    span.style.cssText = 'color:#bbb;margin-left:8px';
+    span.textContent = it.status === 'err' ? '分割(上传失败)' : '分割(上传中...)';
+  }
+  old.replaceWith(span);
 }
 
 function updateStartBtn() {
@@ -255,7 +279,9 @@ function renderFiles() {
       `<span class="prog"><span class="${barCls}" style="width:${it.status==='ok'?100:0}%"></span></span>` +
       `<span class="progtext">${statusText}</span>` +
       `<a href="#" onclick="previewLocal(${i});return false" style="color:#1677ff;margin-left:10px">预览</a>` +
-      `<a href="#" onclick="runSegment(files[${i}].file.name, this);return false" style="color:#1677ff;margin-left:8px">分割</a>` +
+      (it.status === 'ok'
+        ? `<a href="#" onclick="runSegment(${i}, this);return false" style="color:#1677ff;margin-left:8px">分割</a>`
+        : `<span data-seg style="color:#bbb;margin-left:8px">${it.status === 'err' ? '分割(上传失败)' : '分割(上传中...)'}</span>`) +
       `<a href="#" onclick="removeFile(${i});return false" style="color:#1677ff;margin-left:8px">删除</a></div>`;
   }).join('');
 }
@@ -310,9 +336,13 @@ function organLUT() {
   return lut;
 }
 
-window.runSegment = async (filename, btn) => {
-  const fname = filename;
-  const origText = btn.textContent;
+window.runSegment = async (idx, btn) => {
+  const item = files[idx];
+  if (!item || item.status !== 'ok') {
+    alert('文件尚未上传完成，无法分割');
+    return;
+  }
+  const fname = item.file.name;
   btn.textContent = '分割中 0%';
   try {
     // 触发分割（服务端缓存过则直接返回 done）

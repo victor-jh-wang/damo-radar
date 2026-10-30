@@ -210,7 +210,9 @@ def api_file(task_id: str, filename: str):
     for sub in ('images', 'results'):
         path = os.path.join(ROOT, 'radar_web', 'uploads', task_id, sub, fname)
         if os.path.isfile(path):
-            return FileResponse(path, media_type='application/gzip', filename=fname)
+            # 分割产物不变，允许浏览器缓存，重复查看无需重新下载
+            return FileResponse(path, media_type='application/gzip', filename=fname,
+                                headers={'Cache-Control': 'private, max-age=86400'})
     return {'ok': False, 'msg': f'文件不存在: {filename}'}
 
 

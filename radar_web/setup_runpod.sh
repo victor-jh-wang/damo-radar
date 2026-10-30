@@ -41,4 +41,4 @@ fi
 # 4. 启动（前台运行）
 echo "==> All ready, starting uvicorn ..."
 cd "$REPO"
-exec uvicorn radar_web.server:app --host 0.0.0.0 --port 8000
+exec uvicorn radar_web.server:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 3

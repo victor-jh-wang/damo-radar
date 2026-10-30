@@ -342,6 +342,9 @@ function organLUT() {
   return lut;
 }
 
+// 分割结果内存缓存：fname -> {ctBuf, maskBuf}，重复查看不再重新下载
+const segCache = {};
+
 window.runSegment = async (idx, btn) => {
   const item = files[idx];
   if (!item || item.status !== 'ok') {
@@ -349,6 +352,11 @@ window.runSegment = async (idx, btn) => {
     return;
   }
   const fname = item.file.name;
+  // 已有缓存：直接打开，无需再走服务端确认
+  if (segCache[fname]) {
+    showSegViewer(fname, segCache[fname]);
+    return;
+  }
   btn.textContent = '分割中 0%';
   // 分割日志显示在日志区（与推理共用任务日志缓冲，用全局 logCount 记录已收条数）
   logbox.style.display = 'block';
@@ -381,21 +389,28 @@ window.runSegment = async (idx, btn) => {
   }
 };
 
-function showSegViewer(fname) {
-  const ctUrl = `/api/file/${curTaskId}/${encodeURIComponent('seg_ct_' + fname)}`;
-  const maskUrl = `/api/file/${curTaskId}/${encodeURIComponent('seg_mask_' + fname)}`;
+function showSegViewer(fname, cached) {
   if (nvInstance) { try { nvInstance.destroy(); } catch(e) {} nvInstance = null; }
   document.getElementById('nvCanvas').getContext('2d')?.clearRect(0, 0, 1e4, 1e4);
-  document.getElementById('viewerTitle').textContent = fname + '（分割加载中...）';
+  document.getElementById('viewerTitle').textContent = fname + (cached ? '（打开中...）' : '（分割加载中...）');
   document.getElementById('viewerHint').textContent = '彩色为 37 类器官分割 · 左键拖动切换层面 · 滚轮缩放 · 右键拖动调窗宽窗位';
   viewerModal.style.display = 'flex';
   (async () => {
     try {
-      // 先带进度地下载两个 nii.gz（大文件下载才是耗时大头），再交给 niivue 本地渲染。
-      // 注意：此版本 addVolume 不支持 data 参数，但 url 可传 File 对象（内部走 arrayBuffer，无二次网络请求）。
-      showDlProgress();
-      const [ctBuf, maskBuf] = await Promise.all([fetchWithProgress(ctUrl), fetchWithProgress(maskUrl)]);
-      hideDlProgress();
+      let ctBuf, maskBuf;
+      if (cached) {
+        // 内存缓存命中：无需下载
+        ({ ctBuf, maskBuf } = cached);
+      } else {
+        // 先带进度地下载两个 nii.gz（大文件下载才是耗时大头），再交给 niivue 本地渲染。
+        // 注意：此版本 addVolume 不支持 data 参数，但 url 可传 File 对象（内部走 arrayBuffer，无二次网络请求）。
+        const ctUrl = `/api/file/${curTaskId}/${encodeURIComponent('seg_ct_' + fname)}`;
+        const maskUrl = `/api/file/${curTaskId}/${encodeURIComponent('seg_mask_' + fname)}`;
+        showDlProgress();
+        [ctBuf, maskBuf] = await Promise.all([fetchWithProgress(ctUrl), fetchWithProgress(maskUrl)]);
+        hideDlProgress();
+        segCache[fname] = { ctBuf, maskBuf };
+      }
       const { NiiVue } = await import('/static/niivue.js');
       nvInstance = new NiiVue({ isRadiological: false });
       await nvInstance.attachTo('nvCanvas');
@@ -608,6 +623,7 @@ probFilter.onchange = () => {
 
 resetBtn.onclick = () => {
   files = []; renderFiles();
+  for (const k in segCache) delete segCache[k];   // 新任务清空分割缓存，防同名文件串数据
   logbox.textContent = ''; logbox.style.display = 'none';
   resultcard.style.display = 'none'; lastCsvText = null;
   statusEl.style.display = 'none';

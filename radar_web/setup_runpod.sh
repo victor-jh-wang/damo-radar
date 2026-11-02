@@ -34,7 +34,7 @@ fi
 # 3. 权重（已下载则跳过）
 if [ ! -f "$REPO/ckpt/checkpoint_radar_pretrain.pth" ]; then
     cd "$REPO/download_scripts"
-    python download_checkpoints.py --include-patterns checkpoint_radar_pretrain.pth 'bert-base-chinese/*'
+    python download_checkpoints.py
     cd "$REPO"
 fi
 

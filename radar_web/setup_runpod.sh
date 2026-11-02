@@ -40,5 +40,7 @@ fi
 
 # 4. 部署完成（服务由用户手动启动）
 cd "$REPO"
-echo "==> 部署完成。手动启动服务："
+echo "==> 部署完成。当前终端执行以下命令激活环境并启动："
+echo "    source ~/miniconda3/etc/profile.d/conda.sh && conda activate radar"
 echo "    uvicorn radar_web.server:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 3"
+echo "==> 或新开一个终端（.bashrc 已配置自动激活），直接运行 uvicorn 命令"
